@@ -1,0 +1,32 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <IsPackable>true</IsPackable>
+    <PackageId>VroksNet.Aspire</PackageId>
+    <Version>0.1.0</Version>
+    <Authors>versussun</Authors>
+    <Description>.NET Aspire hosting integration for VroksNet — an OpenAPI/AsyncAPI mock server and contract-testing tool. Adds the VroksNet container image to an Aspire AppHost and configures its storage, message brokers and endpoints.</Description>
+    <PackageTags>aspire;hosting;vroksnet;mock;openapi;asyncapi;contract-testing</PackageTags>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageLicenseFile>LICENSE.txt</PackageLicenseFile>
+    <RepositoryUrl>https://github.com/versussun/VroksNet.Aspire</RepositoryUrl>
+    <PackageProjectUrl>https://github.com/versussun/VroksNet</PackageProjectUrl>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Aspire.Hosting" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="..\..\README.md" Pack="true" PackagePath="\" />
+    <None Include="..\..\LICENSE.txt" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="VroksNet.Aspire.Tests" />
+  </ItemGroup>
+
+</Project>

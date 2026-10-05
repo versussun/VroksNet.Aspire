@@ -1,0 +1,20 @@
+<Project Sdk="Aspire.AppHost.Sdk/13.5.3">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <!-- Sample only; it is run with `dotnet run`, not the Aspire CLI. -->
+    <NoWarn>$(NoWarn);ASPIRE010</NoWarn>
+    <UserSecretsId>4f0f6c4e-2b1a-4f57-9d0c-8a3d6c1e7b21</UserSecretsId>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Aspire.Hosting.Nats" />
+    <PackageReference Include="Aspire.Hosting.RabbitMQ" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- A real consumer references the NuGet package instead: <PackageReference Include="VroksNet.Aspire" /> -->
+    <ProjectReference Include="..\..\src\VroksNet.Aspire\VroksNet.Aspire.csproj" IsAspireProjectResource="false" />
+  </ItemGroup>
+
+</Project>

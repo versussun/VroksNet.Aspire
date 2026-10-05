@@ -1,0 +1,11 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/VroksNet.Aspire/VroksNet.Aspire.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/VroksNet.Aspire.Tests/VroksNet.Aspire.Tests.csproj" />
+  </Folder>
+  <Folder Name="/samples/">
+    <Project Path="samples/VroksNet.Aspire.Sample.AppHost/VroksNet.Aspire.Sample.AppHost.csproj" />
+  </Folder>
+</Solution>
