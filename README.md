@@ -2,7 +2,9 @@
 
 .NET Aspire hosting integration for [VroksNet](https://github.com/versussun/VroksNet) — an OpenAPI / AsyncAPI mock server and contract-testing tool.
 
-It adds the VroksNet container image to your Aspire AppHost and wires up the things VroksNet needs: an HTTP endpoint (mock API + management API + Admin UI on one port), SQLite storage, RabbitMQ / NATS brokers for async mocks, health checks and OpenTelemetry export to the Aspire dashboard.
+It runs VroksNet next to your services in an Aspire AppHost and provisions it at startup: specs, connections to your brokers and services, Publishers, Test Scenarios and Test Suites come from files in your repository, so every run (in dev and in `Aspire.Hosting.Testing`) starts with the mocks ready. `WaitFor(vroks)` releases your services only once provisioning has been applied.
+
+The package configures nothing through VroksNet's REST API. It only mounts files and sets environment variables, as described in the [image contract](https://github.com/versussun/VroksNet/blob/master/docs/container-contract.md) (contract version 1). The design is in [ADR 0001](https://github.com/versussun/VroksNet/blob/master/docs/adr/0001-aspire-integration-and-provisioning.md).
 
 ## Install
 
@@ -15,62 +17,58 @@ dotnet add package VroksNet.Aspire
 ```csharp
 var builder = DistributedApplication.CreateBuilder(args);
 
-var rabbitmq = builder.AddRabbitMQ("messaging");
-var nats = builder.AddNats("events");
+var kafka = builder.AddKafka("kafka");
 
-var vroks = builder.AddVroksNet("vroks", port: 7400)
-    .WithDataVolume()        // persist specs, mocks and call history
-    .WithRabbitMQ(rabbitmq)  // AsyncAPI mocks over RabbitMQ
-    .WithNats(nats);         // AsyncAPI mocks over NATS
+var mocks = builder.AddVroksNet("mocks")
+    .WithSpecifications("./mocks/specs")        // every spec in the directory is imported
+    .WithProvisioning("./mocks/vroksnet.yaml")  // provider mode, Publishers, Test Scenarios, …
+    .WithConnection("orders-kafka", kafka);     // the manifest refers to it by name
 
-builder.AddProject<Projects.MyService>("myservice")
-    .WithReference(vroks)    // service discovery: http://vroks
-    .WaitFor(vroks);
+builder.AddProject<Projects.Orders>("orders")
+    .WithEnvironment("Payments__BaseUrl", mocks.GetEndpoint("provider"))  // mocks at the spec's real paths
+    .WaitFor(mocks);
 
 builder.Build().Run();
 ```
 
-The Admin UI is linked from the dashboard as **Admin UI** on the `vroks` resource.
+The manifest references everything by name; its schema is [provisioning-manifest.v1.schema.json](https://github.com/versussun/VroksNet/blob/master/docs/schemas/provisioning-manifest.v1.schema.json). The dashboard links the `http` endpoint as **Admin UI** and the `provider` endpoint as **Provider mock**.
 
 ## API
 
 | Method | What it does |
 |---|---|
-| `AddVroksNet(name, port?)` | Adds the container (`ghcr.io/versussun/vroksnet:latest`), HTTP endpoint on container port 8080, health check, OTLP export. Storage defaults to in-memory SQLite — fresh on every start. |
-| `WithDataVolume(name?)` | Mounts a named volume at `/app/data` and switches VroksNet to a file database there. |
-| `WithDataBindMount(source)` | Same, but with a host directory. |
-| `WithRabbitMQ(resource)` | Passes the broker's connection string as `ConnectionStrings__rabbitmq` (the name VroksNet expects, whatever your resource is called) and waits for it. |
-| `WithNats(resource)` | Same for NATS (`ConnectionStrings__nats`). |
+| `AddVroksNet(name, port?, providerPort?, tag?)` | Adds the container (`ghcr.io/versussun/vroksnet`, pinned to the image this package was tested with) with endpoints `http` (8080: API, Admin UI, `/mock/…`) and `provider` (7353: mocks at real paths), a readiness check on `/health`, OTLP export, and `Provider__PublicUrl`. Storage defaults to in-memory SQLite — fresh on every start. |
+| `WithSpecifications(dir)` / `WithSpecification(file)` | Read-only bind mount under `/app/provisioning/specs`. Can be called several times; OpenAPI, Swagger and AsyncAPI are told apart by content. |
+| `WithProvisioning(manifestFile)` | Read-only bind mount of `vroksnet.yaml`. |
+| `WithConnection(name, resource[, type])` | A connection to a resource with a connection string, passed as `Provisioning__Connections__<i>__*` with `ValueFrom=ConnectionStrings:<resource>`. The type is inferred for RabbitMQ, NATS, Kafka and Redis resources; pass a `VroksNetConnectionType` for the others. VroksNet waits for the resource. |
+| `WithConnection(name, endpoint)` | An HTTP connection to another resource's endpoint (the real service a Test Scenario checks). No wait, so that service may wait for VroksNet. |
+| `WithConnection(name, type, value)` | A connection with a fixed value, e.g. an external URL. |
+| `WithProviderCors(origins...)` | `Provider__CorsOrigins`, for browser frontends calling the provider mock. |
+| `WithProvisioningFailOnError(bool)` | `false`: a provisioning error is logged and VroksNet keeps running (reported `Degraded`) instead of exiting with code 3. |
+| `WithDataVolume(name?)` / `WithDataBindMount(source)` | Persist the SQLite database in `/app/data`. Without them every run starts clean, which is what tests want. |
+
+Relative paths resolve against the AppHost directory; a missing file or directory fails at AppHost startup. Connection names must be unique.
 
 Everything a regular Aspire container supports still applies, for example:
 
 ```csharp
-vroks.WithImageTag("0.2.0");                    // pin a version
-vroks.WithImageRegistry("myregistry.local");    // use a mirror
-vroks.WithDockerfile("../../VroksNet");         // build from a local VroksNet checkout
-vroks.WithLifetime(ContainerLifetime.Persistent);
-```
-
-### Pointing a service at a mock
-
-Service discovery (`WithReference(vroks)`) gives the consumer `services__vroks__http__0`, so an `HttpClient` with base address `http://vroks` reaches VroksNet. If the service reads a plain base-URL setting instead, pass the endpoint directly:
-
-```csharp
-builder.AddProject<Projects.MyService>("myservice")
-    .WithEnvironment("PaymentsApi__BaseUrl", vroks.GetEndpoint("http"))
-    .WaitFor(vroks);
+mocks.WithImageTag("master");                    // a newer image than the pinned one
+mocks.WithImageRegistry("myregistry.local");     // use a mirror
+mocks.WithDockerfile("../../VroksNet");          // build from a local VroksNet checkout
+mocks.WithLifetime(ContainerLifetime.Persistent);
 ```
 
 ## Notes
 
-- The health check probes `/`, not `/health`: VroksNet maps `/health` only in the Development environment, and the image runs as Production.
-- Without a broker, VroksNet still starts — only publishing to that broker fails.
+- Connection strings are resolved on the container network, so a broker is reached at its container address, not the host's `localhost:<port>`.
+- Provisioned objects are brought back in line with the manifest on every start; edits made to them in the Admin UI are lost. Objects created in the UI aren't touched, and provisioning never deletes.
+- If provisioning fails, the container exits with code 3. Its log names the file or manifest entry that failed; `GET /api/system/info` on the `http` endpoint shows the provisioning state.
 
 ## Repository layout
 
 - `src/VroksNet.Aspire` — the package.
 - `tests/VroksNet.Aspire.Tests` — application-model tests (no Docker needed).
-- `samples/VroksNet.Aspire.Sample.AppHost` — a runnable AppHost using the integration.
+- `samples/VroksNet.Aspire.Sample.AppHost` — a runnable AppHost: two specs, a manifest with provider mode, a RabbitMQ Publisher and a startup smoke suite.
 
 ## Release
 

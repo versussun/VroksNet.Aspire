@@ -8,5 +8,10 @@ internal static class VroksNetContainerImageTags
 
     public const string Image = "versussun/vroksnet";
 
-    public const string Tag = "latest";
+    /// <remarks>
+    /// Pinned, and moved with this package's releases. The last image release (0.1.0) predates
+    /// provisioning, so until 0.2.0 is out this is the <c>master</c> build that implements
+    /// image contract v1 in full.
+    /// </remarks>
+    public const string Tag = "sha-ebd503e";
 }

@@ -1,0 +1,34 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/versussun/VroksNet/master/docs/schemas/provisioning-manifest.v1.schema.json
+#
+# Applied by VroksNet at every start (AppHost.cs: WithProvisioning). Specs come from specs/
+# (WithSpecifications) and are referenced by their info.title; the "notifications" connection
+# is declared in AppHost.cs with WithConnection, not here.
+version: 1
+
+connections:
+  # VroksNet's own mock, from inside its container, so the smoke suite passes with nothing else running.
+  - name: bookstore-mock
+    type: Http
+    value: http://localhost:8080/mock
+
+specifications:
+  - title: Bookstore Sample API
+    providerMode: true   # served at /books, /orders, … on the "provider" endpoint
+
+publishers:
+  - name: email-requested
+    specification: Notifications RabbitMQ Sample
+    operation: "notify.email.requested:receive"
+    connection: notifications
+    intervalSeconds: 10
+
+testScenarios:
+  - name: list-books
+    specification: Bookstore Sample API
+    operation: "GET /books"
+    connection: bookstore-mock
+
+testSuites:
+  - name: smoke
+    scenarios: [list-books]
+    runOnStartup: true
