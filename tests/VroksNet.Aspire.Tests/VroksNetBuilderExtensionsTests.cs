@@ -5,10 +5,14 @@ namespace VroksNet.Aspire.Tests;
 
 // Application-model tests only: they inspect what AddVroksNet/With* put on the resource and
 // never start a container, so no Docker is needed.
-public sealed class VroksNetBuilderExtensionsTests
+public sealed class VroksNetBuilderExtensionsTests : IDisposable
 {
+    private readonly string _tempDirectory = Directory.CreateTempSubdirectory("vroksnet-aspire-tests-").FullName;
+
+    public void Dispose() => Directory.Delete(_tempDirectory, recursive: true);
+
     [Fact]
-    public void AddVroksNet_ConfiguresImageFromGhcr()
+    public void AddVroksNet_ConfiguresPinnedImageFromGhcr()
     {
         var builder = DistributedApplication.CreateBuilder();
 
@@ -17,21 +21,36 @@ public sealed class VroksNetBuilderExtensionsTests
         Assert.True(vroks.Resource.TryGetLastAnnotation<ContainerImageAnnotation>(out var image));
         Assert.Equal("ghcr.io", image.Registry);
         Assert.Equal("versussun/vroksnet", image.Image);
-        Assert.Equal("latest", image.Tag);
+        Assert.NotEqual("latest", image.Tag);
     }
 
     [Fact]
-    public void AddVroksNet_ExposesHttpEndpointOnContainerPort8080()
+    public void AddVroksNet_UsesGivenTag()
     {
         var builder = DistributedApplication.CreateBuilder();
 
-        var vroks = builder.AddVroksNet("vroks", port: 7400);
+        var vroks = builder.AddVroksNet("vroks", tag: "0.2.0");
 
-        var endpoint = Assert.Single(vroks.Resource.Annotations.OfType<EndpointAnnotation>());
-        Assert.Equal("http", endpoint.Name);
-        Assert.Equal("http", endpoint.UriScheme);
-        Assert.Equal(7400, endpoint.Port);
-        Assert.Equal(8080, endpoint.TargetPort);
+        Assert.True(vroks.Resource.TryGetLastAnnotation<ContainerImageAnnotation>(out var image));
+        Assert.Equal("0.2.0", image.Tag);
+    }
+
+    [Fact]
+    public void AddVroksNet_ExposesHttpAndProviderEndpoints()
+    {
+        var builder = DistributedApplication.CreateBuilder();
+
+        var vroks = builder.AddVroksNet("vroks", port: 7400, providerPort: 7401);
+
+        var endpoints = vroks.Resource.Annotations.OfType<EndpointAnnotation>().ToDictionary(e => e.Name);
+        Assert.Equal(2, endpoints.Count);
+        Assert.Equal("http", endpoints["http"].UriScheme);
+        Assert.Equal(7400, endpoints["http"].Port);
+        Assert.Equal(8080, endpoints["http"].TargetPort);
+        Assert.Equal("http", endpoints["provider"].UriScheme);
+        Assert.Equal(7401, endpoints["provider"].Port);
+        Assert.Equal(7353, endpoints["provider"].TargetPort);
+        Assert.Equal("provider", vroks.Resource.ProviderEndpoint.EndpointName);
     }
 
     [Fact]
@@ -53,6 +72,17 @@ public sealed class VroksNetBuilderExtensionsTests
 
         var env = await GetEnvironmentAsync(vroks.Resource);
         Assert.Equal(string.Empty, env["ConnectionStrings__VroksNetDb"]);
+    }
+
+    [Fact]
+    public async Task AddVroksNet_PassesProviderPublicUrl()
+    {
+        var builder = DistributedApplication.CreateBuilder();
+
+        var vroks = builder.AddVroksNet("vroks");
+
+        var env = await GetEnvironmentAsync(vroks.Resource);
+        Assert.Equal("{vroks.bindings.provider.url}", env["Provider__PublicUrl"]);
     }
 
     [Fact]
@@ -99,33 +129,352 @@ public sealed class VroksNetBuilderExtensionsTests
     }
 
     [Fact]
-    public async Task WithBrokers_UseVroksNetConnectionNamesRegardlessOfResourceNames()
+    public void WithSpecifications_MountsEachDirectoryReadOnlyUnderSpecs()
     {
+        var payments = CreateDirectory("payments");
+        var orders = CreateDirectory("orders");
         var builder = DistributedApplication.CreateBuilder();
-        var rabbit = builder.AddRabbitMQ("messaging");
-        var nats = builder.AddNats("events");
 
-        var vroks = builder.AddVroksNet("vroks").WithRabbitMQ(rabbit).WithNats(nats);
+        var vroks = builder.AddVroksNet("vroks").WithSpecifications(payments).WithSpecifications(orders + Path.DirectorySeparatorChar);
 
-        var env = await GetEnvironmentAsync(vroks.Resource, DistributedApplicationOperation.Publish);
-        Assert.Contains("ConnectionStrings__rabbitmq", env.Keys);
-        Assert.Contains("ConnectionStrings__nats", env.Keys);
-        Assert.DoesNotContain("ConnectionStrings__messaging", env.Keys);
-        Assert.DoesNotContain("ConnectionStrings__events", env.Keys);
+        var mounts = vroks.Resource.Annotations.OfType<ContainerMountAnnotation>().ToList();
+        Assert.Equal(["/app/provisioning/specs/payments", "/app/provisioning/specs/orders"], mounts.Select(m => m.Target));
+        Assert.All(mounts, m => Assert.Equal(ContainerMountType.BindMount, m.Type));
+        Assert.All(mounts, m => Assert.True(m.IsReadOnly));
+        Assert.Equal(payments, mounts[0].Source);
     }
 
     [Fact]
-    public void WithBrokers_WaitForBrokers()
+    public void WithSpecification_MountsFileUnderSpecsAndSuffixesClashingNames()
+    {
+        var first = CreateFile("a/bookstore.yaml");
+        var second = CreateFile("b/bookstore.yaml");
+        var builder = DistributedApplication.CreateBuilder();
+
+        var vroks = builder.AddVroksNet("vroks").WithSpecification(first).WithSpecification(second);
+
+        var targets = vroks.Resource.Annotations.OfType<ContainerMountAnnotation>().Select(m => m.Target);
+        Assert.Equal(["/app/provisioning/specs/bookstore.yaml", "/app/provisioning/specs/bookstore-2.yaml"], targets);
+    }
+
+    [Fact]
+    public void WithSpecifications_RejectsMissingPaths()
+    {
+        var builder = DistributedApplication.CreateBuilder();
+        var vroks = builder.AddVroksNet("vroks");
+        var missing = Path.Combine(_tempDirectory, "missing");
+
+        Assert.Throws<DirectoryNotFoundException>(() => vroks.WithSpecifications(missing));
+        Assert.Throws<FileNotFoundException>(() => vroks.WithSpecification(missing + ".yaml"));
+        Assert.Throws<FileNotFoundException>(() => vroks.WithProvisioning(missing + ".yaml"));
+    }
+
+    [Fact]
+    public void WithProvisioning_MountsManifestReadOnly()
+    {
+        var manifest = CreateFile("mocks/vroksnet.yaml");
+        var builder = DistributedApplication.CreateBuilder();
+
+        var vroks = builder.AddVroksNet("vroks").WithProvisioning(manifest);
+
+        var mount = Assert.Single(vroks.Resource.Annotations.OfType<ContainerMountAnnotation>());
+        Assert.Equal(manifest, mount.Source);
+        Assert.Equal("/app/provisioning/vroksnet.yaml", mount.Target);
+        Assert.True(mount.IsReadOnly);
+    }
+
+    [Fact]
+    public void WithProvisioning_RejectsSecondManifest()
+    {
+        var manifest = CreateFile("vroksnet.yaml");
+        var builder = DistributedApplication.CreateBuilder();
+        var vroks = builder.AddVroksNet("vroks").WithProvisioning(manifest);
+
+        Assert.Throws<InvalidOperationException>(() => vroks.WithProvisioning(manifest));
+    }
+
+    [Fact]
+    public async Task WithConnection_DeclaresIndexedConnectionsReadingTheResourceConnectionString()
     {
         var builder = DistributedApplication.CreateBuilder();
         var rabbit = builder.AddRabbitMQ("messaging");
         var nats = builder.AddNats("events");
 
-        var vroks = builder.AddVroksNet("vroks").WithRabbitMQ(rabbit).WithNats(nats);
+        var vroks = builder.AddVroksNet("vroks")
+            .WithConnection("orders-rabbit", rabbit)
+            .WithConnection("telemetry", nats);
 
-        var waitedOn = vroks.Resource.Annotations.OfType<WaitAnnotation>().Select(w => w.Resource).ToList();
-        Assert.Contains(rabbit.Resource, waitedOn);
-        Assert.Contains(nats.Resource, waitedOn);
+        var env = await GetEnvironmentAsync(vroks.Resource);
+        Assert.Equal("orders-rabbit", env["Provisioning__Connections__0__Name"]);
+        Assert.Equal("RabbitMq", env["Provisioning__Connections__0__Type"]);
+        Assert.Equal("ConnectionStrings:messaging", env["Provisioning__Connections__0__ValueFrom"]);
+        Assert.Equal("telemetry", env["Provisioning__Connections__1__Name"]);
+        Assert.Equal("Nats", env["Provisioning__Connections__1__Type"]);
+        Assert.Equal("ConnectionStrings:events", env["Provisioning__Connections__1__ValueFrom"]);
+        Assert.Contains("ConnectionStrings__messaging", env.Keys);
+        Assert.Contains("ConnectionStrings__events", env.Keys);
+    }
+
+    [Fact]
+    public void WithConnection_WaitsForTheResource()
+    {
+        var builder = DistributedApplication.CreateBuilder();
+        var rabbit = builder.AddRabbitMQ("messaging");
+
+        var vroks = builder.AddVroksNet("vroks").WithConnection("orders-rabbit", rabbit);
+
+        Assert.Contains(rabbit.Resource, vroks.Resource.Annotations.OfType<WaitAnnotation>().Select(w => w.Resource));
+    }
+
+    [Fact]
+    public async Task WithConnection_UsesExplicitType()
+    {
+        var builder = DistributedApplication.CreateBuilder();
+        var bus = builder.AddConnectionString("bus");
+
+        var vroks = builder.AddVroksNet("vroks").WithConnection("warehouse", bus, VroksNetConnectionType.ServiceBus);
+
+        var env = await GetEnvironmentAsync(vroks.Resource);
+        Assert.Equal("ServiceBus", env["Provisioning__Connections__0__Type"]);
+        Assert.Equal("ConnectionStrings:bus", env["Provisioning__Connections__0__ValueFrom"]);
+    }
+
+    [Fact]
+    public void WithConnection_RejectsResourceWhoseTypeCantBeInferred()
+    {
+        var builder = DistributedApplication.CreateBuilder();
+        var bus = builder.AddConnectionString("bus");
+        var vroks = builder.AddVroksNet("vroks");
+
+        Assert.Throws<ArgumentException>(() => vroks.WithConnection("warehouse", bus));
+    }
+
+    [Fact]
+    public void WithConnection_RejectsDuplicateNames()
+    {
+        var builder = DistributedApplication.CreateBuilder();
+        var vroks = builder.AddVroksNet("vroks").WithConnection("payments", VroksNetConnectionType.Http, "http://payments");
+
+        Assert.Throws<InvalidOperationException>(() => vroks.WithConnection("Payments", VroksNetConnectionType.Http, "http://other"));
+    }
+
+    [Fact]
+    public async Task WithConnection_FixedValueAndEndpoint()
+    {
+        var builder = DistributedApplication.CreateBuilder();
+        var orders = builder.AddContainer("orders", "alpine").WithHttpEndpoint(targetPort: 8080, name: "http");
+
+        var vroks = builder.AddVroksNet("vroks")
+            .WithConnection("payments", VroksNetConnectionType.Http, "https://payments.example.com")
+            .WithConnection("orders-http", orders.GetEndpoint("http"));
+
+        var env = await GetEnvironmentAsync(vroks.Resource);
+        Assert.Equal("https://payments.example.com", env["Provisioning__Connections__0__Value"]);
+        Assert.Equal("Http", env["Provisioning__Connections__1__Type"]);
+        Assert.Equal("{orders.bindings.http.url}", env["Provisioning__Connections__1__Value"]);
+        Assert.DoesNotContain(orders.Resource, vroks.Resource.Annotations.OfType<WaitAnnotation>().Select(w => w.Resource));
+    }
+
+    [Fact]
+    public async Task WithConnection_OneResourceCanBackSeveralConnections()
+    {
+        var builder = DistributedApplication.CreateBuilder();
+        var rabbit = builder.AddRabbitMQ("messaging");
+
+        var vroks = builder.AddVroksNet("vroks")
+            .WithConnection("orders", rabbit)
+            .WithConnection("notifications", rabbit);
+
+        var env = await GetEnvironmentAsync(vroks.Resource);
+        Assert.Equal("orders", env["Provisioning__Connections__0__Name"]);
+        Assert.Equal("notifications", env["Provisioning__Connections__1__Name"]);
+        Assert.Equal("ConnectionStrings:messaging", env["Provisioning__Connections__0__ValueFrom"]);
+        Assert.Equal("ConnectionStrings:messaging", env["Provisioning__Connections__1__ValueFrom"]);
+    }
+
+    [Theory]
+    [InlineData("GarnetResource", "Redis")]
+    [InlineData("ValkeyResource", "Redis")]
+    [InlineData("AzureServiceBusResource", "ServiceBus")]
+    public async Task WithConnection_InfersRedisCompatibleAndServiceBusTypes(string typeName, string expectedType)
+    {
+        var builder = DistributedApplication.CreateBuilder();
+        IResource fake = typeName switch
+        {
+            "GarnetResource" => new GarnetResource("cache"),
+            "ValkeyResource" => new ValkeyResource("cache"),
+            _ => new AzureServiceBusResource("cache"),
+        };
+        var resource = builder.AddResource((IResourceWithConnectionString)fake);
+
+        var vroks = builder.AddVroksNet("vroks").WithConnection("cache", resource);
+
+        var env = await GetEnvironmentAsync(vroks.Resource);
+        Assert.Equal(expectedType, env["Provisioning__Connections__0__Type"]);
+    }
+
+    [Fact]
+    public async Task WithConnection_TakesSecretValueFromParameter()
+    {
+        var builder = DistributedApplication.CreateBuilder();
+        var secret = builder.AddParameter("payments-sb", "Endpoint=sb://payments/", secret: true);
+
+        var vroks = builder.AddVroksNet("vroks").WithConnection("payments", VroksNetConnectionType.ServiceBus, secret);
+
+        var env = await GetEnvironmentAsync(vroks.Resource);
+        Assert.Equal("ServiceBus", env["Provisioning__Connections__0__Type"]);
+        Assert.Equal("{payments-sb.value}", env["Provisioning__Connections__0__Value"]);
+    }
+
+    [Fact]
+    public async Task WithConnectionString_SuppliesManifestValueFromWithoutDeclaringAConnection()
+    {
+        var builder = DistributedApplication.CreateBuilder();
+        var rabbit = builder.AddRabbitMQ("messaging");
+        var secret = builder.AddParameter("external", "nats://external:4222", secret: true);
+
+        var vroks = builder.AddVroksNet("vroks")
+            .WithConnectionString("orders_rabbit", rabbit)
+            .WithConnectionString("external-nats", secret)
+            .WithConnectionString("bookstore-mock", "http://localhost:8080/mock");
+
+        var env = await GetEnvironmentAsync(vroks.Resource);
+        Assert.Contains("ConnectionStrings__orders_rabbit", env.Keys);
+        Assert.Equal("{external.value}", env["ConnectionStrings__external-nats"]);
+        Assert.Equal("http://localhost:8080/mock", env["ConnectionStrings__bookstore-mock"]);
+        Assert.DoesNotContain(env.Keys, key => key.StartsWith("Provisioning__Connections__", StringComparison.Ordinal));
+        Assert.Contains(rabbit.Resource, vroks.Resource.Annotations.OfType<WaitAnnotation>().Select(w => w.Resource));
+    }
+
+    [Theory]
+    [InlineData("orders:rabbit")]
+    [InlineData("orders rabbit")]
+    [InlineData("")]
+    public void WithConnectionString_RejectsNamesOutsideTheExportAlphabet(string name)
+    {
+        var builder = DistributedApplication.CreateBuilder();
+        var rabbit = builder.AddRabbitMQ("messaging");
+        var vroks = builder.AddVroksNet("vroks");
+
+        Assert.ThrowsAny<ArgumentException>(() => vroks.WithConnectionString(name, rabbit));
+    }
+
+    [Fact]
+    public void WithProvisioningDirectory_MountsWholeRootReadOnlyAndCreatesIt()
+    {
+        var directory = Path.Combine(_tempDirectory, "mocks");
+        var builder = DistributedApplication.CreateBuilder();
+
+        var vroks = builder.AddVroksNet("vroks").WithProvisioningDirectory(directory);
+
+        var mount = Assert.Single(vroks.Resource.Annotations.OfType<ContainerMountAnnotation>());
+        Assert.Equal(directory, mount.Source);
+        Assert.Equal("/app/provisioning", mount.Target);
+        Assert.True(mount.IsReadOnly);
+        Assert.True(Directory.Exists(directory));
+    }
+
+    [Fact]
+    public void WithProvisioningDirectory_CantBeCombinedWithOtherProvisioningMounts()
+    {
+        var specs = CreateDirectory("specs");
+        var manifest = CreateFile("vroksnet.yaml");
+        var builder = DistributedApplication.CreateBuilder();
+
+        var fromDirectory = builder.AddVroksNet("a").WithProvisioningDirectory(CreateDirectory("mocks"));
+        Assert.Throws<InvalidOperationException>(() => fromDirectory.WithSpecifications(specs));
+        Assert.Throws<InvalidOperationException>(() => fromDirectory.WithProvisioning(manifest));
+        Assert.Throws<InvalidOperationException>(() => fromDirectory.WithSpecificationFromUrl("https://example.com/api.yaml"));
+
+        var fromFiles = builder.AddVroksNet("b").WithSpecifications(specs);
+        Assert.Throws<InvalidOperationException>(() => fromFiles.WithProvisioningDirectory(CreateDirectory("other")));
+    }
+
+    [Fact]
+    public void WithProvisioningDirectory_LeavesDataVolumeAlone()
+    {
+        var builder = DistributedApplication.CreateBuilder();
+
+        var vroks = builder.AddVroksNet("vroks").WithDataVolume("data").WithProvisioningDirectory(CreateDirectory("mocks"));
+
+        Assert.Equal(2, vroks.Resource.Annotations.OfType<ContainerMountAnnotation>().Count());
+    }
+
+    [Theory]
+    [InlineData("https://example.com/specs/stripe.yaml", null, "stripe.yaml")]
+    [InlineData("https://example.com/openapi", null, "openapi.yaml")]
+    [InlineData("https://example.com/", null, "specification.yaml")]
+    [InlineData("https://example.com/v3/api-docs", "payments.json", "payments.json")]
+    public void WithSpecificationFromUrl_MountsDownloadUnderSpecs(string url, string? fileName, string expectedFile)
+    {
+        var builder = DistributedApplication.CreateBuilder();
+
+        var vroks = builder.AddVroksNet("vroks").WithSpecificationFromUrl(url, fileName);
+
+        var mount = Assert.Single(vroks.Resource.Annotations.OfType<ContainerMountAnnotation>());
+        Assert.Equal($"/app/provisioning/specs/{expectedFile}", mount.Target);
+        Assert.Equal(expectedFile, Path.GetFileName(mount.Source));
+        Assert.True(mount.IsReadOnly);
+    }
+
+    [Theory]
+    [InlineData("example.com/api.yaml")]
+    [InlineData("ftp://example.com/api.yaml")]
+    public void WithSpecificationFromUrl_RejectsNonHttpUrls(string url)
+    {
+        var builder = DistributedApplication.CreateBuilder();
+        var vroks = builder.AddVroksNet("vroks");
+
+        Assert.Throws<ArgumentException>(() => vroks.WithSpecificationFromUrl(url));
+    }
+
+    [Fact]
+    public void WithSpecificationFromUrl_IsSkippedInPublishMode()
+    {
+        var builder = DistributedApplication.CreateBuilder(["--publisher", "manifest", "--output-path", Path.Combine(_tempDirectory, "manifest.json")]);
+
+        var vroks = builder.AddVroksNet("vroks").WithSpecificationFromUrl("https://example.com/api.yaml");
+
+        Assert.Empty(vroks.Resource.Annotations.OfType<ContainerMountAnnotation>());
+    }
+
+    [Fact]
+    public void WithSpecificationFrom_WaitsForTheServiceAndNamesTheFileAfterIt()
+    {
+        var builder = DistributedApplication.CreateBuilder();
+        var orders = builder.AddContainer("orders", "alpine").WithHttpEndpoint(targetPort: 8080, name: "http");
+
+        var vroks = builder.AddVroksNet("vroks").WithSpecificationFrom(orders.GetEndpoint("http"));
+
+        var mount = Assert.Single(vroks.Resource.Annotations.OfType<ContainerMountAnnotation>());
+        Assert.Equal("/app/provisioning/specs/orders.json", mount.Target);
+        Assert.Contains(orders.Resource, vroks.Resource.Annotations.OfType<WaitAnnotation>().Select(w => w.Resource));
+    }
+
+    [Fact]
+    public void WithExportCommand_AddsDashboardCommand()
+    {
+        var builder = DistributedApplication.CreateBuilder();
+
+        var vroks = builder.AddVroksNet("vroks").WithExportCommand("./mocks");
+
+        var command = Assert.Single(vroks.Resource.Annotations.OfType<ResourceCommandAnnotation>(), c => c.Name == "vroksnet-export");
+        Assert.Equal("Export configuration", command.DisplayName);
+        Assert.NotNull(command.ConfirmationMessage);
+    }
+
+    [Fact]
+    public async Task WithProviderCorsAndFailOnError_SetContractVariables()
+    {
+        var builder = DistributedApplication.CreateBuilder();
+
+        var vroks = builder.AddVroksNet("vroks")
+            .WithProviderCors("http://localhost:5173", "http://localhost:4200")
+            .WithProvisioningFailOnError(false);
+
+        var env = await GetEnvironmentAsync(vroks.Resource);
+        Assert.Equal("http://localhost:5173,http://localhost:4200", env["Provider__CorsOrigins"]);
+        Assert.Equal("false", env["Provisioning__FailOnError"]);
     }
 
     [Fact]
@@ -136,7 +485,7 @@ public sealed class VroksNetBuilderExtensionsTests
 
         var consumer = builder.AddContainer("consumer", "alpine").WithReference(vroks);
 
-        var env = await GetEnvironmentAsync(consumer.Resource, DistributedApplicationOperation.Publish);
+        var env = await GetEnvironmentAsync(consumer.Resource);
         Assert.Contains("services__vroks__http__0", env.Keys);
     }
 
@@ -150,15 +499,42 @@ public sealed class VroksNetBuilderExtensionsTests
         Assert.ThrowsAny<ArgumentException>(() => builder.AddVroksNet(name));
     }
 
+    private string CreateDirectory(string relativePath) =>
+        Directory.CreateDirectory(Path.Combine(_tempDirectory, relativePath)).FullName;
+
+    private string CreateFile(string relativePath)
+    {
+        var path = Path.GetFullPath(Path.Combine(_tempDirectory, relativePath));
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        File.WriteAllText(path, string.Empty);
+        return path;
+    }
+
     // Publish mode renders endpoint/connection-string references as manifest expressions
-    // instead of resolving allocated ports, so it works without running the app.
-    private static async Task<Dictionary<string, string?>> GetEnvironmentAsync(
-        IResourceWithEnvironment resource,
-        DistributedApplicationOperation operation = DistributedApplicationOperation.Run)
+    // instead of resolving allocated ports, so it works without running the app (in Run mode
+    // Provider__PublicUrl would wait forever for the provider endpoint to be allocated).
+    private static async Task<Dictionary<string, string?>> GetEnvironmentAsync(IResourceWithEnvironment resource)
     {
 #pragma warning disable CS0618 // Still the documented way to inspect env vars in unit tests.
-        var values = await resource.GetEnvironmentVariableValuesAsync(operation);
+        var values = await resource.GetEnvironmentVariableValuesAsync(DistributedApplicationOperation.Publish);
 #pragma warning restore CS0618
         return values.ToDictionary(kv => kv.Key, kv => (string?)kv.Value);
     }
+}
+
+// Stand-ins named like the hosting packages' resource types: WithConnection infers the type by
+// name, so the tests don't need a package reference per broker.
+internal sealed class GarnetResource(string name) : Resource(name), IResourceWithConnectionString
+{
+    public ReferenceExpression ConnectionStringExpression => ReferenceExpression.Create($"cache:6379");
+}
+
+internal sealed class ValkeyResource(string name) : Resource(name), IResourceWithConnectionString
+{
+    public ReferenceExpression ConnectionStringExpression => ReferenceExpression.Create($"cache:6379");
+}
+
+internal sealed class AzureServiceBusResource(string name) : Resource(name), IResourceWithConnectionString
+{
+    public ReferenceExpression ConnectionStringExpression => ReferenceExpression.Create($"Endpoint=sb://cache/");
 }

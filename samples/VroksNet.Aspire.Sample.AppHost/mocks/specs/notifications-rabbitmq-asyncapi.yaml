@@ -1,0 +1,239 @@
+# Sample spec for local testing — NOT a real service spec. See docs/samples/README.md.
+#
+# AsyncAPI 3.0 for RabbitMQ: the channel address is the routing key. The exchange is NOT taken
+# from the spec's amqp bindings — set it on the Publisher / Test Scenario (here: "notifications").
+# - Send/Publisher publish to that exchange with routing key = address (notify.email.requested).
+# - Listen binds a temporary queue to the exchange with the address as binding key, so the
+#   service's own queues still get every message. {channel} below is a whole "." segment, so a
+#   Listen on notify.{channel}.delivered hears notify.email.delivered, notify.sms.delivered, …
+# - With the exchange left blank, Send publishes through the default exchange straight into a
+#   queue named after the address — that queue must exist.
+asyncapi: 3.0.0
+info:
+  title: Notifications RabbitMQ Sample
+  version: "2.0.0"
+  description: A notification service that consumes send requests and reports delivery outcomes.
+servers:
+  local:
+    host: localhost:5672
+    protocol: amqp
+    protocolVersion: 0-9-1
+    description: The Aspire "rabbitmq" resource (credentials and port are in the dashboard).
+channels:
+  emailRequested:
+    address: notify.email.requested
+    messages:
+      emailRequested:
+        $ref: "#/components/messages/EmailRequested"
+    bindings:
+      amqp:
+        is: routingKey
+        exchange:
+          name: notifications
+          type: topic
+          durable: true
+          autoDelete: false
+          vhost: /
+  smsRequested:
+    address: notify.sms.requested
+    messages:
+      smsRequested:
+        $ref: "#/components/messages/SmsRequested"
+    bindings:
+      amqp:
+        is: routingKey
+        exchange:
+          name: notifications
+          type: topic
+          durable: true
+  delivered:
+    address: notify.{channel}.delivered
+    parameters:
+      channel:
+        enum: [email, sms, push]
+    messages:
+      delivered:
+        $ref: "#/components/messages/DeliveryReport"
+  bounced:
+    address: notify.email.bounced
+    messages:
+      bounced:
+        $ref: "#/components/messages/Bounce"
+operations:
+  requestEmail:
+    action: receive
+    channel:
+      $ref: "#/channels/emailRequested"
+    summary: The notification service consumes email requests — a Send scenario or Publisher plays the caller.
+    messages:
+      - $ref: "#/channels/emailRequested/messages/emailRequested"
+    bindings:
+      amqp:
+        ack: true
+  requestSms:
+    action: receive
+    channel:
+      $ref: "#/channels/smsRequested"
+    messages:
+      - $ref: "#/channels/smsRequested/messages/smsRequested"
+  reportDelivered:
+    action: send
+    channel:
+      $ref: "#/channels/delivered"
+    summary: Published once a provider confirms delivery — Listen here to check the service under test.
+    messages:
+      - $ref: "#/channels/delivered/messages/delivered"
+  reportBounced:
+    action: send
+    channel:
+      $ref: "#/channels/bounced"
+    messages:
+      - $ref: "#/channels/bounced/messages/bounced"
+components:
+  messages:
+    EmailRequested:
+      name: EmailRequested
+      contentType: application/json
+      headers:
+        type: object
+        properties:
+          x-priority:
+            type: integer
+      bindings:
+        amqp:
+          contentEncoding: utf-8
+          messageType: notify.email.requested
+      payload:
+        $ref: "#/components/schemas/EmailRequestedPayload"
+      examples:
+        - name: welcome
+          payload:
+            requestId: "{{uuid}}"
+            requestedAt: "{{now}}"
+            to: [ada@example.com]
+            cc: []
+            template: welcome
+            locale: uk-UA
+            variables:
+              firstName: Ada
+              activationUrl: https://shop.example.com/activate/abc123
+            priority: normal
+    SmsRequested:
+      name: SmsRequested
+      payload:
+        $ref: "#/components/schemas/SmsRequestedPayload"
+      examples:
+        - name: otp
+          payload:
+            requestId: "{{uuid}}"
+            requestedAt: "{{now}}"
+            to: "+380501234567"
+            text: "Your code: 482913"
+            validForSeconds: 300
+    DeliveryReport:
+      name: DeliveryReport
+      payload:
+        $ref: "#/components/schemas/DeliveryReportPayload"
+      examples:
+        - name: emailDelivered
+          payload:
+            requestId: 6a2f7f3e-1111-4b5c-9d00-000000000001
+            channel: email
+            provider: ses
+            deliveredAt: "{{now}}"
+            attempts: 1
+    Bounce:
+      name: Bounce
+      payload:
+        $ref: "#/components/schemas/BouncePayload"
+      examples:
+        - name: hardBounce
+          payload:
+            requestId: 6a2f7f3e-1111-4b5c-9d00-000000000001
+            address: nobody@example.invalid
+            kind: hard
+            diagnostic: "550 5.1.1 user unknown"
+            bouncedAt: "{{now}}"
+  schemas:
+    EmailRequestedPayload:
+      type: object
+      required: [requestId, requestedAt, to, template]
+      properties:
+        requestId:
+          type: string
+        requestedAt:
+          type: string
+          format: date-time
+        to:
+          type: array
+          minItems: 1
+          items:
+            type: string
+            format: email
+        cc:
+          type: array
+          items:
+            type: string
+            format: email
+        template:
+          type: string
+          enum: [welcome, order-confirmation, password-reset, shipping-update]
+        locale:
+          type: string
+        variables:
+          type: object
+          additionalProperties:
+            type: string
+        priority:
+          type: string
+          enum: [low, normal, high]
+    SmsRequestedPayload:
+      type: object
+      required: [requestId, requestedAt, to, text]
+      properties:
+        requestId:
+          type: string
+        requestedAt:
+          type: string
+          format: date-time
+        to:
+          type: string
+          pattern: "^\\+[1-9][0-9]{7,14}$"
+        text:
+          type: string
+          maxLength: 160
+        validForSeconds:
+          type: integer
+    DeliveryReportPayload:
+      type: object
+      required: [requestId, channel, deliveredAt]
+      properties:
+        requestId:
+          type: string
+        channel:
+          type: string
+          enum: [email, sms, push]
+        provider:
+          type: string
+        deliveredAt:
+          type: string
+          format: date-time
+        attempts:
+          type: integer
+          minimum: 1
+    BouncePayload:
+      type: object
+      required: [requestId, address, kind, bouncedAt]
+      properties:
+        requestId:
+          type: string
+        address:
+          type: string
+        kind:
+          type: string
+          enum: [hard, soft, complaint]
+        diagnostic:
+          type: string
+        bouncedAt:
+          type: string
+          format: date-time

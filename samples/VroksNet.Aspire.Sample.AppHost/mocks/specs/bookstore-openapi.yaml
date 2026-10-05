@@ -1,0 +1,617 @@
+# Sample spec for local testing — NOT a real service spec. See docs/samples/README.md.
+#
+# An extended OpenAPI 3.0 example. Shows how VroksNet mocks it:
+# - one example per operation: the response's `example` (lowest status with a JSON body first),
+#   otherwise the request body's;
+# - the mock answers with the status the example came from (201, 202, …);
+# - every placeholder: {{request.path.*}}, {{request.query.*}}, {{request.header.*}},
+#   {{request.body.<jsonpath>}}, {{request.body}}, {{uuid}}, {{now}};
+# - a response schema for every status, so a contract test can check whatever the real service
+#   answers (200, 404, 409, 422, default).
+# Placeholders are quoted in YAML on purpose: an unquoted {{ … }} is a YAML flow mapping. That
+# also means each one lands inside a JSON string, so only string fields are echoed from the
+# request here — arrays/objects/numbers stay literal (see README.md, "Templating").
+openapi: 3.0.3
+info:
+  title: Bookstore Sample API
+  version: "2.1.0"
+  description: |
+    Catalogue, orders and reviews of an online bookstore. Exercises path/query/header
+    parameters, request bodies, several status codes per operation and response templating.
+servers:
+  - url: https://bookstore.example.com/api/v2
+tags:
+  - name: books
+  - name: orders
+  - name: reviews
+paths:
+  /books:
+    get:
+      tags: [books]
+      operationId: listBooks
+      summary: List books, filtered and paged
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/PageSize"
+        - name: genre
+          in: query
+          schema:
+            $ref: "#/components/schemas/Genre"
+        - name: q
+          in: query
+          description: Full-text search over title and author.
+          schema:
+            type: string
+      responses:
+        "200":
+          description: One page of books
+          headers:
+            X-Total-Count:
+              schema:
+                type: integer
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BookPage"
+              example:
+                page: 1
+                pageSize: 20
+                total: 2
+                query: "{{request.query.q}}"
+                items:
+                  - id: "bk_1001"
+                    isbn: "978-0-13-468599-1"
+                    title: The Pragmatic Programmer
+                    authors: [David Thomas, Andrew Hunt]
+                    genre: technology
+                    price: { amount: 39.99, currency: EUR }
+                    inStock: true
+                    tags: [classic, craftsmanship]
+                    publishedOn: "2019-09-13"
+                  - id: "bk_1002"
+                    isbn: "978-0-321-12521-7"
+                    title: Domain-Driven Design
+                    authors: [Eric Evans]
+                    genre: technology
+                    price: { amount: 54.5, currency: EUR }
+                    inStock: false
+                    tags: [ddd]
+                    publishedOn: "2003-08-20"
+        default:
+          $ref: "#/components/responses/Error"
+    post:
+      tags: [books]
+      operationId: createBook
+      summary: Add a book to the catalogue
+      parameters:
+        - $ref: "#/components/parameters/RequestId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/NewBook"
+            example:
+              isbn: "978-1-61729-453-7"
+              title: Dependency Injection Principles, Practices, and Patterns
+              authors: [Steven van Deursen, Mark Seemann]
+              genre: technology
+              price: { amount: 49.99, currency: EUR }
+      responses:
+        "201":
+          description: Created — echoes the request body back with server-assigned fields
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Book"
+              example:
+                id: "{{uuid}}"
+                isbn: "{{request.body.isbn}}"
+                title: "{{request.body.title}}"
+                authors: [Steven van Deursen, Mark Seemann]
+                genre: technology
+                price: { amount: 49.99, currency: EUR }
+                inStock: false
+                tags: []
+                createdAt: "{{now}}"
+                requestId: "{{request.header.X-Request-Id}}"
+        "409":
+          description: A book with this ISBN already exists
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Problem"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+  /books/{bookId}:
+    parameters:
+      - $ref: "#/components/parameters/BookId"
+    get:
+      tags: [books]
+      operationId: getBook
+      summary: Get one book
+      parameters:
+        - name: Accept-Language
+          in: header
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The book
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Book"
+              example:
+                id: "{{request.path.bookId}}"
+                isbn: "978-0-13-468599-1"
+                title: The Pragmatic Programmer
+                authors: [David Thomas, Andrew Hunt]
+                genre: technology
+                price: { amount: 39.99, currency: EUR }
+                inStock: true
+                tags: [classic]
+                language: "{{request.header.Accept-Language}}"
+        "404":
+          $ref: "#/components/responses/NotFound"
+    put:
+      tags: [books]
+      operationId: replaceBook
+      summary: Replace a book
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/NewBook"
+      responses:
+        "200":
+          description: The updated book — the request body plus the id from the path
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Book"
+              example:
+                id: "{{request.path.bookId}}"
+                isbn: "{{request.body.isbn}}"
+                title: "{{request.body.title}}"
+                authors: [David Thomas, Andrew Hunt]
+                genre: technology
+                price: { amount: 44.99, currency: EUR }
+                inStock: true
+                tags: []
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+    delete:
+      tags: [books]
+      operationId: deleteBook
+      summary: Remove a book
+      responses:
+        "204":
+          description: Deleted — no body, so the mock answers 204 with an empty object
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /books/{bookId}/reviews:
+    parameters:
+      - $ref: "#/components/parameters/BookId"
+    get:
+      tags: [reviews]
+      operationId: listReviews
+      summary: Reviews of a book
+      parameters:
+        - name: minRating
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 5
+      responses:
+        "200":
+          description: Reviews, newest first
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Review"
+              example:
+                - id: "rv_1"
+                  bookId: "{{request.path.bookId}}"
+                  rating: 5
+                  title: Still relevant
+                  body: Re-read it every couple of years.
+                  author: { name: Ada, verified: true }
+                  createdAt: "2026-03-01T10:15:00Z"
+                - id: "rv_2"
+                  bookId: "{{request.path.bookId}}"
+                  rating: 3
+                  title: null
+                  body: Good, but dated in places.
+                  author: { name: Linus, verified: false }
+                  createdAt: "2026-02-11T08:00:00Z"
+    post:
+      tags: [reviews]
+      operationId: createReview
+      summary: Review a book
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/NewReview"
+      responses:
+        "201":
+          description: The stored review
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Review"
+              example:
+                id: "{{uuid}}"
+                bookId: "{{request.path.bookId}}"
+                rating: 5
+                title: "{{request.body.title}}"
+                body: "{{request.body.body}}"
+                author: { name: "{{request.body.$.author.name}}", verified: false }
+                createdAt: "{{now}}"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+  /orders:
+    post:
+      tags: [orders]
+      operationId: placeOrder
+      summary: Place an order
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/NewOrder"
+            example:
+              customerId: "cus_42"
+              lines:
+                - { bookId: "bk_1001", quantity: 1 }
+                - { bookId: "bk_1002", quantity: 2 }
+              shippingAddress:
+                line1: 1 Main Street
+                city: Kyiv
+                postalCode: "01001"
+                country: UA
+      responses:
+        "202":
+          description: Accepted — the order is processed asynchronously
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Order"
+              example:
+                id: "{{uuid}}"
+                status: pending
+                customerId: "{{request.body.customerId}}"
+                lines:
+                  - { bookId: "bk_1001", quantity: 1 }
+                  - { bookId: "bk_1002", quantity: 2 }
+                shippingAddress:
+                  line1: 1 Main Street
+                  city: Kyiv
+                  postalCode: "01001"
+                  country: UA
+                idempotencyKey: "{{request.header.Idempotency-Key}}"
+                placedAt: "{{now}}"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+  /orders/{orderId}:
+    get:
+      tags: [orders]
+      operationId: getOrder
+      summary: Order status
+      parameters:
+        - name: orderId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: The order
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Order"
+              example:
+                id: "{{request.path.orderId}}"
+                status: shipped
+                customerId: "cus_42"
+                lines:
+                  - { bookId: "bk_1001", quantity: 1 }
+                shippingAddress:
+                  line1: 1 Main Street
+                  city: Kyiv
+                  postalCode: "01001"
+                  country: UA
+                placedAt: "2026-09-30T12:00:00Z"
+                tracking: { carrier: Nova Poshta, number: "20450000000000" }
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /health:
+    get:
+      operationId: health
+      summary: Liveness probe
+      responses:
+        "200":
+          description: Healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status:
+                    type: string
+                    enum: [ok]
+                  checkedAt:
+                    type: string
+                    format: date-time
+              example:
+                status: ok
+                checkedAt: "{{now}}"
+components:
+  parameters:
+    BookId:
+      name: bookId
+      in: path
+      required: true
+      schema:
+        type: string
+        pattern: "^[a-zA-Z0-9_-]+$"
+    Page:
+      name: page
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        default: 1
+    PageSize:
+      name: pageSize
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+    RequestId:
+      name: X-Request-Id
+      in: header
+      schema:
+        type: string
+  responses:
+    NotFound:
+      description: Nothing with this id
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    ValidationError:
+      description: The request body didn't pass validation
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ValidationProblem"
+    Error:
+      description: Any other error
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+  schemas:
+    Genre:
+      type: string
+      enum: [fiction, non-fiction, technology, science, children]
+    Money:
+      type: object
+      required: [amount, currency]
+      properties:
+        amount:
+          type: number
+          minimum: 0
+        currency:
+          type: string
+          pattern: "^[A-Z]{3}$"
+    NewBook:
+      type: object
+      required: [isbn, title, authors, price]
+      properties:
+        isbn:
+          type: string
+        title:
+          type: string
+          minLength: 1
+        authors:
+          type: array
+          minItems: 1
+          items:
+            type: string
+        genre:
+          $ref: "#/components/schemas/Genre"
+        price:
+          $ref: "#/components/schemas/Money"
+        publishedOn:
+          type: string
+          format: date
+    Book:
+      allOf:
+        - $ref: "#/components/schemas/NewBook"
+        - type: object
+          required: [id, inStock]
+          properties:
+            id:
+              type: string
+            inStock:
+              type: boolean
+            tags:
+              type: array
+              items:
+                type: string
+            language:
+              type: string
+            createdAt:
+              type: string
+              format: date-time
+            requestId:
+              type: string
+    BookPage:
+      type: object
+      required: [page, pageSize, total, items]
+      properties:
+        page:
+          type: integer
+        pageSize:
+          type: integer
+        total:
+          type: integer
+        query:
+          type: string
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Book"
+    NewReview:
+      type: object
+      required: [rating, body, author]
+      properties:
+        rating:
+          type: integer
+          minimum: 1
+          maximum: 5
+        title:
+          type: string
+          nullable: true
+        body:
+          type: string
+        author:
+          type: object
+          required: [name]
+          properties:
+            name:
+              type: string
+    Review:
+      type: object
+      required: [id, bookId, rating, body, author, createdAt]
+      properties:
+        id:
+          type: string
+        bookId:
+          type: string
+        rating:
+          type: integer
+          minimum: 1
+          maximum: 5
+        title:
+          type: string
+          nullable: true
+        body:
+          type: string
+        author:
+          type: object
+          required: [name, verified]
+          properties:
+            name:
+              type: string
+            verified:
+              type: boolean
+        createdAt:
+          type: string
+          format: date-time
+    OrderLine:
+      type: object
+      required: [bookId, quantity]
+      properties:
+        bookId:
+          type: string
+        quantity:
+          type: integer
+          minimum: 1
+    Address:
+      type: object
+      required: [line1, city, country]
+      properties:
+        line1:
+          type: string
+        line2:
+          type: string
+        city:
+          type: string
+        postalCode:
+          type: string
+        country:
+          type: string
+          minLength: 2
+          maxLength: 2
+    NewOrder:
+      type: object
+      required: [customerId, lines, shippingAddress]
+      properties:
+        customerId:
+          type: string
+        lines:
+          type: array
+          minItems: 1
+          items:
+            $ref: "#/components/schemas/OrderLine"
+        shippingAddress:
+          $ref: "#/components/schemas/Address"
+    Order:
+      allOf:
+        - $ref: "#/components/schemas/NewOrder"
+        - type: object
+          required: [id, status, placedAt]
+          properties:
+            id:
+              type: string
+            status:
+              type: string
+              enum: [pending, paid, shipped, delivered, cancelled]
+            idempotencyKey:
+              type: string
+            placedAt:
+              type: string
+              format: date-time
+            tracking:
+              type: object
+              properties:
+                carrier:
+                  type: string
+                number:
+                  type: string
+    Problem:
+      type: object
+      required: [title, status]
+      properties:
+        type:
+          type: string
+        title:
+          type: string
+        status:
+          type: integer
+        detail:
+          type: string
+    ValidationProblem:
+      allOf:
+        - $ref: "#/components/schemas/Problem"
+        - type: object
+          required: [errors]
+          properties:
+            errors:
+              type: object
+              additionalProperties:
+                type: array
+                items:
+                  type: string

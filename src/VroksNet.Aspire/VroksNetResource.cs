@@ -1,34 +1,59 @@
 namespace Aspire.Hosting.ApplicationModel;
 
 /// <summary>
-/// A VroksNet container: one process serving the mock API, the management REST API and the
-/// Blazor WebAssembly Admin UI on a single HTTP endpoint.
+/// A VroksNet container: the management REST API, the Admin UI and the <c>/mock/…</c> routes on
+/// the <c>http</c> endpoint, and provider mode (mocks at the spec's real paths) on the
+/// <c>provider</c> endpoint.
 /// </summary>
+/// <remarks>
+/// Everything this integration relies on is the image contract:
+/// https://github.com/versussun/VroksNet/blob/master/docs/container-contract.md
+/// </remarks>
 /// <param name="name">The name of the resource.</param>
 public sealed class VroksNetResource(string name) : ContainerResource(name), IResourceWithServiceDiscovery
 {
     internal const string HttpEndpointName = "http";
 
-    /// <summary>The port ASP.NET Core listens on inside the image (<c>ASPNETCORE_HTTP_PORTS</c> default of the aspnet base image).</summary>
+    internal const string ProviderEndpointName = "provider";
+
+    /// <summary>The API and UI port inside the image (contract §3).</summary>
     internal const int ContainerHttpPort = 8080;
 
-    /// <summary>Directory declared as <c>VOLUME</c> in the image; holds the SQLite database file.</summary>
+    /// <summary>The provider mode port inside the image (contract §3).</summary>
+    internal const int ContainerProviderPort = 7353;
+
+    /// <summary>Readiness: Unhealthy until provisioning has been applied (contract §6).</summary>
+    internal const string HealthPath = "/health";
+
+    /// <summary>Declared as <c>VOLUME</c> in the image; holds the SQLite database file (contract §4).</summary>
     internal const string DataDirectory = "/app/data";
 
-    /// <summary>Configuration key VroksNet reads its SQLite connection string from.</summary>
+    /// <summary>The provisioning root (contract §4).</summary>
+    internal const string ProvisioningDirectory = "/app/provisioning";
+
+    internal const string SpecificationsDirectory = ProvisioningDirectory + "/specs";
+
+    internal const string ManifestPath = ProvisioningDirectory + "/vroksnet.yaml";
+
     internal const string DatabaseConnectionStringVariable = "ConnectionStrings__VroksNetDb";
 
-    /// <summary>
-    /// Connection names VroksNet's ApiService hardcodes for its Aspire broker clients
-    /// (<c>AddRabbitMQClient("rabbitmq")</c>, <c>AddNatsClient("nats")</c>) — independent of what
-    /// the broker resource is called in the consuming AppHost.
-    /// </summary>
-    internal const string RabbitMQConnectionStringVariable = "ConnectionStrings__rabbitmq";
+    internal const string ProviderPublicUrlVariable = "Provider__PublicUrl";
 
-    internal const string NatsConnectionStringVariable = "ConnectionStrings__nats";
+    internal const string ProviderCorsOriginsVariable = "Provider__CorsOrigins";
+
+    internal const string FailOnErrorVariable = "Provisioning__FailOnError";
+
+    internal const string ConnectionVariablePrefix = "Provisioning__Connections__";
 
     private EndpointReference? _primaryEndpoint;
+    private EndpointReference? _providerEndpoint;
 
-    /// <summary>The HTTP endpoint serving the mock API, the management API and the Admin UI.</summary>
+    /// <summary>The HTTP endpoint serving the management API, the Admin UI and the <c>/mock/…</c> routes.</summary>
     public EndpointReference PrimaryEndpoint => _primaryEndpoint ??= new(this, HttpEndpointName);
+
+    /// <summary>
+    /// The provider mode endpoint: mocks served at the spec's real paths. Hand it to a service in
+    /// place of the real dependency's base URL.
+    /// </summary>
+    public EndpointReference ProviderEndpoint => _providerEndpoint ??= new(this, ProviderEndpointName);
 }
