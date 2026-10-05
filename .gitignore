@@ -41,3 +41,6 @@ Thumbs.db
 # Logs
 *.log
 artifacts/
+
+# Written by the sample AppHost's "Export configuration" command
+samples/**/exported/

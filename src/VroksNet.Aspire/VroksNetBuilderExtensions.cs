@@ -8,7 +8,7 @@ namespace Aspire.Hosting;
 /// environment variables, as the image contract describes
 /// (https://github.com/versussun/VroksNet/blob/master/docs/container-contract.md).
 /// </remarks>
-public static class VroksNetBuilderExtensions
+public static partial class VroksNetBuilderExtensions
 {
     /// <summary>
     /// Adds a VroksNet container to the application model. By default it stores data in an
@@ -99,82 +99,11 @@ public static class VroksNetBuilderExtensions
     }
 
     /// <summary>
-    /// Imports every spec in a host directory at startup (<c>*.yaml</c>, <c>*.yml</c>, <c>*.json</c>,
-    /// nested directories included; OpenAPI, Swagger and AsyncAPI are told apart by content).
-    /// Can be called several times.
-    /// </summary>
-    /// <param name="builder">The resource builder.</param>
-    /// <param name="directory">The host directory. Relative paths resolve against the AppHost directory.</param>
-    /// <returns>A reference to the <see cref="IResourceBuilder{T}"/>.</returns>
-    /// <exception cref="DirectoryNotFoundException">The directory doesn't exist.</exception>
-    public static IResourceBuilder<VroksNetResource> WithSpecifications(this IResourceBuilder<VroksNetResource> builder, string directory)
-    {
-        ArgumentNullException.ThrowIfNull(builder);
-        ArgumentException.ThrowIfNullOrWhiteSpace(directory);
-
-        var source = builder.ResolveHostPath(directory);
-        if (!Directory.Exists(source))
-        {
-            throw new DirectoryNotFoundException($"VroksNet specifications directory '{source}' doesn't exist.");
-        }
-
-        return builder.WithSpecificationMount(source, Path.GetFileName(source));
-    }
-
-    /// <summary>Imports one spec file at startup. Can be called several times.</summary>
-    /// <param name="builder">The resource builder.</param>
-    /// <param name="file">The spec file. Relative paths resolve against the AppHost directory.</param>
-    /// <returns>A reference to the <see cref="IResourceBuilder{T}"/>.</returns>
-    /// <exception cref="FileNotFoundException">The file doesn't exist.</exception>
-    public static IResourceBuilder<VroksNetResource> WithSpecification(this IResourceBuilder<VroksNetResource> builder, string file)
-    {
-        ArgumentNullException.ThrowIfNull(builder);
-        ArgumentException.ThrowIfNullOrWhiteSpace(file);
-
-        var source = builder.ResolveHostPath(file);
-        if (!File.Exists(source))
-        {
-            throw new FileNotFoundException($"VroksNet specification file '{source}' doesn't exist.", source);
-        }
-
-        return builder.WithSpecificationMount(source, Path.GetFileName(source));
-    }
-
-    /// <summary>
-    /// Applies a provisioning manifest (<c>vroksnet.yaml</c>) at startup: connections, spec
-    /// settings, Publishers, Test Scenarios and Test Suites, all referenced by name. Provisioned
-    /// objects are brought back in line with the file on every start.
-    /// </summary>
-    /// <param name="builder">The resource builder.</param>
-    /// <param name="manifestFile">The manifest. Relative paths resolve against the AppHost directory.</param>
-    /// <returns>A reference to the <see cref="IResourceBuilder{T}"/>.</returns>
-    /// <exception cref="FileNotFoundException">The file doesn't exist.</exception>
-    /// <exception cref="InvalidOperationException">A manifest has already been set.</exception>
-    /// <remarks>Schema: https://github.com/versussun/VroksNet/blob/master/docs/schemas/provisioning-manifest.v1.schema.json</remarks>
-    public static IResourceBuilder<VroksNetResource> WithProvisioning(this IResourceBuilder<VroksNetResource> builder, string manifestFile)
-    {
-        ArgumentNullException.ThrowIfNull(builder);
-        ArgumentException.ThrowIfNullOrWhiteSpace(manifestFile);
-
-        var source = builder.ResolveHostPath(manifestFile);
-        if (!File.Exists(source))
-        {
-            throw new FileNotFoundException($"VroksNet provisioning manifest '{source}' doesn't exist.", source);
-        }
-
-        if (builder.Resource.Annotations.OfType<ContainerMountAnnotation>().Any(m => m.Target == VroksNetResource.ManifestPath))
-        {
-            throw new InvalidOperationException($"'{builder.Resource.Name}' already has a provisioning manifest; VroksNet reads only one.");
-        }
-
-        return builder.WithBindMount(source, VroksNetResource.ManifestPath, isReadOnly: true);
-    }
-
-    /// <summary>
     /// Declares a VroksNet connection to a resource with a connection string — a broker or a
     /// service VroksNet sends to, listens on or tests. The type is inferred for RabbitMQ, NATS,
-    /// Kafka and Redis resources; use the overload taking a <see cref="VroksNetConnectionType"/>
-    /// for anything else. VroksNet waits for the resource.
+    /// Kafka, Redis (and Garnet, Valkey) and Azure Service Bus resources; use the overload taking a
+    /// <see cref="VroksNetConnectionType"/> for anything else. VroksNet waits for the resource.
+    /// Call it once per connection: VroksNet takes any number of them, and one resource may back several.
     /// </summary>
     /// <param name="builder">The resource builder.</param>
     /// <param name="name">The connection name the manifest's Publishers and Test Scenarios refer to.</param>
@@ -267,6 +196,92 @@ public static class VroksNetBuilderExtensions
     }
 
     /// <summary>
+    /// Declares a VroksNet connection whose value is a parameter — for a value that holds
+    /// credentials, e.g. an external broker's connection string kept in user secrets.
+    /// </summary>
+    /// <param name="builder">The resource builder.</param>
+    /// <param name="name">The connection name the manifest's Publishers and Test Scenarios refer to.</param>
+    /// <param name="type">The connection type.</param>
+    /// <param name="value">The parameter holding the value, e.g. <c>builder.AddParameter("payments-sb", secret: true)</c>.</param>
+    /// <returns>A reference to the <see cref="IResourceBuilder{T}"/>.</returns>
+    public static IResourceBuilder<VroksNetResource> WithConnection(
+        this IResourceBuilder<VroksNetResource> builder,
+        string name,
+        VroksNetConnectionType type,
+        IResourceBuilder<ParameterResource> value)
+    {
+        ArgumentNullException.ThrowIfNull(builder);
+        ArgumentNullException.ThrowIfNull(value);
+
+        var prefix = builder.AddConnection(name, type);
+
+        return builder.WithEnvironment(prefix + "Value", value);
+    }
+
+    /// <summary>
+    /// Supplies <c>ConnectionStrings__&lt;name&gt;</c> from a resource, for a connection the
+    /// <em>manifest</em> declares with <c>valueFrom: ConnectionStrings:&lt;name&gt;</c> — which is how
+    /// an exported manifest declares every connection. Unlike <c>WithConnection</c>, it declares
+    /// no connection of its own. VroksNet waits for the resource.
+    /// </summary>
+    /// <param name="builder">The resource builder.</param>
+    /// <param name="name">The key after <c>ConnectionStrings:</c> in the manifest's <c>valueFrom</c>.</param>
+    /// <param name="resource">The resource whose connection string to pass.</param>
+    /// <returns>A reference to the <see cref="IResourceBuilder{T}"/>.</returns>
+    public static IResourceBuilder<VroksNetResource> WithConnectionString(
+        this IResourceBuilder<VroksNetResource> builder,
+        string name,
+        IResourceBuilder<IResourceWithConnectionString> resource)
+    {
+        ArgumentNullException.ThrowIfNull(builder);
+        ArgumentNullException.ThrowIfNull(resource);
+
+        return builder
+            .WithEnvironment(ConnectionStringVariable(name), resource.Resource.ConnectionStringExpression)
+            .WithReferenceRelationship(resource)
+            .WaitFor(resource);
+    }
+
+    /// <summary>
+    /// Supplies <c>ConnectionStrings__&lt;name&gt;</c> from a parameter, for a connection the
+    /// manifest declares with <c>valueFrom: ConnectionStrings:&lt;name&gt;</c>.
+    /// </summary>
+    /// <param name="builder">The resource builder.</param>
+    /// <param name="name">The key after <c>ConnectionStrings:</c> in the manifest's <c>valueFrom</c>.</param>
+    /// <param name="value">The parameter holding the value.</param>
+    /// <returns>A reference to the <see cref="IResourceBuilder{T}"/>.</returns>
+    public static IResourceBuilder<VroksNetResource> WithConnectionString(
+        this IResourceBuilder<VroksNetResource> builder,
+        string name,
+        IResourceBuilder<ParameterResource> value)
+    {
+        ArgumentNullException.ThrowIfNull(builder);
+        ArgumentNullException.ThrowIfNull(value);
+
+        return builder.WithEnvironment(ConnectionStringVariable(name), value);
+    }
+
+    /// <summary>
+    /// Supplies <c>ConnectionStrings__&lt;name&gt;</c> with a fixed value, for a connection the
+    /// manifest declares with <c>valueFrom: ConnectionStrings:&lt;name&gt;</c> — an export turns
+    /// even a plain URL into one.
+    /// </summary>
+    /// <param name="builder">The resource builder.</param>
+    /// <param name="name">The key after <c>ConnectionStrings:</c> in the manifest's <c>valueFrom</c>.</param>
+    /// <param name="value">The value.</param>
+    /// <returns>A reference to the <see cref="IResourceBuilder{T}"/>.</returns>
+    public static IResourceBuilder<VroksNetResource> WithConnectionString(
+        this IResourceBuilder<VroksNetResource> builder,
+        string name,
+        string value)
+    {
+        ArgumentNullException.ThrowIfNull(builder);
+        ArgumentException.ThrowIfNullOrWhiteSpace(value);
+
+        return builder.WithEnvironment(ConnectionStringVariable(name), value);
+    }
+
+    /// <summary>
     /// Allows browser frontends on the given origins to call the provider mode mock
     /// (<c>Provider__CorsOrigins</c>). CORS is off by default.
     /// </summary>
@@ -307,27 +322,6 @@ public static class VroksNetBuilderExtensions
         Path.GetFullPath(path, builder.ApplicationBuilder.AppHostDirectory)
             .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
 
-    /// <summary>
-    /// Mounts a spec file or directory under <c>specs/</c> by its own name — each in its own
-    /// place, so several calls don't shadow each other — with a numeric suffix on a clash.
-    /// </summary>
-    private static IResourceBuilder<VroksNetResource> WithSpecificationMount(this IResourceBuilder<VroksNetResource> builder, string source, string fileName)
-    {
-        var taken = builder.Resource.Annotations.OfType<ContainerMountAnnotation>()
-            .Select(m => m.Target)
-            .ToHashSet(StringComparer.Ordinal);
-
-        var stem = Path.GetFileNameWithoutExtension(fileName);
-        var extension = Path.GetExtension(fileName);
-        var target = $"{VroksNetResource.SpecificationsDirectory}/{fileName}";
-        for (var i = 2; taken.Contains(target); i++)
-        {
-            target = $"{VroksNetResource.SpecificationsDirectory}/{stem}-{i}{extension}";
-        }
-
-        return builder.WithBindMount(source, target, isReadOnly: true);
-    }
-
     /// <summary>Registers a connection's name and type; returns the variable prefix for its value.</summary>
     private static string AddConnection(this IResourceBuilder<VroksNetResource> builder, string name, VroksNetConnectionType type)
     {
@@ -352,6 +346,21 @@ public static class VroksNetBuilderExtensions
         return prefix;
     }
 
+    /// <summary>
+    /// <c>ConnectionStrings__&lt;name&gt;</c>. The name is limited to what VroksNet's export writes
+    /// (<c>[A-Za-z0-9_-]</c>), so the variable is valid in every shell.
+    /// </summary>
+    private static string ConnectionStringVariable(string name)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        if (!name.All(c => char.IsAsciiLetterOrDigit(c) || c is '_' or '-'))
+        {
+            throw new ArgumentException($"Connection string name '{name}' may contain only letters, digits, '_' and '-'.", nameof(name));
+        }
+
+        return $"ConnectionStrings__{name}";
+    }
+
     // Matched by type name: this package depends on Aspire.Hosting alone, not on each broker's
     // hosting package.
     private static VroksNetConnectionType InferConnectionType(IResourceWithConnectionString resource) =>
@@ -360,7 +369,9 @@ public static class VroksNetBuilderExtensions
             "RabbitMQServerResource" => VroksNetConnectionType.RabbitMq,
             "NatsServerResource" => VroksNetConnectionType.Nats,
             "KafkaServerResource" => VroksNetConnectionType.Kafka,
-            "RedisResource" => VroksNetConnectionType.Redis,
+            // Garnet and Valkey speak the Redis protocol and use its connection string format.
+            "RedisResource" or "GarnetResource" or "ValkeyResource" => VroksNetConnectionType.Redis,
+            "AzureServiceBusResource" => VroksNetConnectionType.ServiceBus,
             var typeName => throw new ArgumentException(
                 $"Can't tell the VroksNet connection type of '{resource.Name}' ({typeName}); pass a {nameof(VroksNetConnectionType)}.",
                 nameof(resource)),

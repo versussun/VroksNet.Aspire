@@ -276,6 +276,194 @@ public sealed class VroksNetBuilderExtensionsTests : IDisposable
     }
 
     [Fact]
+    public async Task WithConnection_OneResourceCanBackSeveralConnections()
+    {
+        var builder = DistributedApplication.CreateBuilder();
+        var rabbit = builder.AddRabbitMQ("messaging");
+
+        var vroks = builder.AddVroksNet("vroks")
+            .WithConnection("orders", rabbit)
+            .WithConnection("notifications", rabbit);
+
+        var env = await GetEnvironmentAsync(vroks.Resource);
+        Assert.Equal("orders", env["Provisioning__Connections__0__Name"]);
+        Assert.Equal("notifications", env["Provisioning__Connections__1__Name"]);
+        Assert.Equal("ConnectionStrings:messaging", env["Provisioning__Connections__0__ValueFrom"]);
+        Assert.Equal("ConnectionStrings:messaging", env["Provisioning__Connections__1__ValueFrom"]);
+    }
+
+    [Theory]
+    [InlineData("GarnetResource", "Redis")]
+    [InlineData("ValkeyResource", "Redis")]
+    [InlineData("AzureServiceBusResource", "ServiceBus")]
+    public async Task WithConnection_InfersRedisCompatibleAndServiceBusTypes(string typeName, string expectedType)
+    {
+        var builder = DistributedApplication.CreateBuilder();
+        IResource fake = typeName switch
+        {
+            "GarnetResource" => new GarnetResource("cache"),
+            "ValkeyResource" => new ValkeyResource("cache"),
+            _ => new AzureServiceBusResource("cache"),
+        };
+        var resource = builder.AddResource((IResourceWithConnectionString)fake);
+
+        var vroks = builder.AddVroksNet("vroks").WithConnection("cache", resource);
+
+        var env = await GetEnvironmentAsync(vroks.Resource);
+        Assert.Equal(expectedType, env["Provisioning__Connections__0__Type"]);
+    }
+
+    [Fact]
+    public async Task WithConnection_TakesSecretValueFromParameter()
+    {
+        var builder = DistributedApplication.CreateBuilder();
+        var secret = builder.AddParameter("payments-sb", "Endpoint=sb://payments/", secret: true);
+
+        var vroks = builder.AddVroksNet("vroks").WithConnection("payments", VroksNetConnectionType.ServiceBus, secret);
+
+        var env = await GetEnvironmentAsync(vroks.Resource);
+        Assert.Equal("ServiceBus", env["Provisioning__Connections__0__Type"]);
+        Assert.Equal("{payments-sb.value}", env["Provisioning__Connections__0__Value"]);
+    }
+
+    [Fact]
+    public async Task WithConnectionString_SuppliesManifestValueFromWithoutDeclaringAConnection()
+    {
+        var builder = DistributedApplication.CreateBuilder();
+        var rabbit = builder.AddRabbitMQ("messaging");
+        var secret = builder.AddParameter("external", "nats://external:4222", secret: true);
+
+        var vroks = builder.AddVroksNet("vroks")
+            .WithConnectionString("orders_rabbit", rabbit)
+            .WithConnectionString("external-nats", secret)
+            .WithConnectionString("bookstore-mock", "http://localhost:8080/mock");
+
+        var env = await GetEnvironmentAsync(vroks.Resource);
+        Assert.Contains("ConnectionStrings__orders_rabbit", env.Keys);
+        Assert.Equal("{external.value}", env["ConnectionStrings__external-nats"]);
+        Assert.Equal("http://localhost:8080/mock", env["ConnectionStrings__bookstore-mock"]);
+        Assert.DoesNotContain(env.Keys, key => key.StartsWith("Provisioning__Connections__", StringComparison.Ordinal));
+        Assert.Contains(rabbit.Resource, vroks.Resource.Annotations.OfType<WaitAnnotation>().Select(w => w.Resource));
+    }
+
+    [Theory]
+    [InlineData("orders:rabbit")]
+    [InlineData("orders rabbit")]
+    [InlineData("")]
+    public void WithConnectionString_RejectsNamesOutsideTheExportAlphabet(string name)
+    {
+        var builder = DistributedApplication.CreateBuilder();
+        var rabbit = builder.AddRabbitMQ("messaging");
+        var vroks = builder.AddVroksNet("vroks");
+
+        Assert.ThrowsAny<ArgumentException>(() => vroks.WithConnectionString(name, rabbit));
+    }
+
+    [Fact]
+    public void WithProvisioningDirectory_MountsWholeRootReadOnlyAndCreatesIt()
+    {
+        var directory = Path.Combine(_tempDirectory, "mocks");
+        var builder = DistributedApplication.CreateBuilder();
+
+        var vroks = builder.AddVroksNet("vroks").WithProvisioningDirectory(directory);
+
+        var mount = Assert.Single(vroks.Resource.Annotations.OfType<ContainerMountAnnotation>());
+        Assert.Equal(directory, mount.Source);
+        Assert.Equal("/app/provisioning", mount.Target);
+        Assert.True(mount.IsReadOnly);
+        Assert.True(Directory.Exists(directory));
+    }
+
+    [Fact]
+    public void WithProvisioningDirectory_CantBeCombinedWithOtherProvisioningMounts()
+    {
+        var specs = CreateDirectory("specs");
+        var manifest = CreateFile("vroksnet.yaml");
+        var builder = DistributedApplication.CreateBuilder();
+
+        var fromDirectory = builder.AddVroksNet("a").WithProvisioningDirectory(CreateDirectory("mocks"));
+        Assert.Throws<InvalidOperationException>(() => fromDirectory.WithSpecifications(specs));
+        Assert.Throws<InvalidOperationException>(() => fromDirectory.WithProvisioning(manifest));
+        Assert.Throws<InvalidOperationException>(() => fromDirectory.WithSpecificationFromUrl("https://example.com/api.yaml"));
+
+        var fromFiles = builder.AddVroksNet("b").WithSpecifications(specs);
+        Assert.Throws<InvalidOperationException>(() => fromFiles.WithProvisioningDirectory(CreateDirectory("other")));
+    }
+
+    [Fact]
+    public void WithProvisioningDirectory_LeavesDataVolumeAlone()
+    {
+        var builder = DistributedApplication.CreateBuilder();
+
+        var vroks = builder.AddVroksNet("vroks").WithDataVolume("data").WithProvisioningDirectory(CreateDirectory("mocks"));
+
+        Assert.Equal(2, vroks.Resource.Annotations.OfType<ContainerMountAnnotation>().Count());
+    }
+
+    [Theory]
+    [InlineData("https://example.com/specs/stripe.yaml", null, "stripe.yaml")]
+    [InlineData("https://example.com/openapi", null, "openapi.yaml")]
+    [InlineData("https://example.com/", null, "specification.yaml")]
+    [InlineData("https://example.com/v3/api-docs", "payments.json", "payments.json")]
+    public void WithSpecificationFromUrl_MountsDownloadUnderSpecs(string url, string? fileName, string expectedFile)
+    {
+        var builder = DistributedApplication.CreateBuilder();
+
+        var vroks = builder.AddVroksNet("vroks").WithSpecificationFromUrl(url, fileName);
+
+        var mount = Assert.Single(vroks.Resource.Annotations.OfType<ContainerMountAnnotation>());
+        Assert.Equal($"/app/provisioning/specs/{expectedFile}", mount.Target);
+        Assert.Equal(expectedFile, Path.GetFileName(mount.Source));
+        Assert.True(mount.IsReadOnly);
+    }
+
+    [Theory]
+    [InlineData("example.com/api.yaml")]
+    [InlineData("ftp://example.com/api.yaml")]
+    public void WithSpecificationFromUrl_RejectsNonHttpUrls(string url)
+    {
+        var builder = DistributedApplication.CreateBuilder();
+        var vroks = builder.AddVroksNet("vroks");
+
+        Assert.Throws<ArgumentException>(() => vroks.WithSpecificationFromUrl(url));
+    }
+
+    [Fact]
+    public void WithSpecificationFromUrl_IsSkippedInPublishMode()
+    {
+        var builder = DistributedApplication.CreateBuilder(["--publisher", "manifest", "--output-path", Path.Combine(_tempDirectory, "manifest.json")]);
+
+        var vroks = builder.AddVroksNet("vroks").WithSpecificationFromUrl("https://example.com/api.yaml");
+
+        Assert.Empty(vroks.Resource.Annotations.OfType<ContainerMountAnnotation>());
+    }
+
+    [Fact]
+    public void WithSpecificationFrom_WaitsForTheServiceAndNamesTheFileAfterIt()
+    {
+        var builder = DistributedApplication.CreateBuilder();
+        var orders = builder.AddContainer("orders", "alpine").WithHttpEndpoint(targetPort: 8080, name: "http");
+
+        var vroks = builder.AddVroksNet("vroks").WithSpecificationFrom(orders.GetEndpoint("http"));
+
+        var mount = Assert.Single(vroks.Resource.Annotations.OfType<ContainerMountAnnotation>());
+        Assert.Equal("/app/provisioning/specs/orders.json", mount.Target);
+        Assert.Contains(orders.Resource, vroks.Resource.Annotations.OfType<WaitAnnotation>().Select(w => w.Resource));
+    }
+
+    [Fact]
+    public void WithExportCommand_AddsDashboardCommand()
+    {
+        var builder = DistributedApplication.CreateBuilder();
+
+        var vroks = builder.AddVroksNet("vroks").WithExportCommand("./mocks");
+
+        var command = Assert.Single(vroks.Resource.Annotations.OfType<ResourceCommandAnnotation>(), c => c.Name == "vroksnet-export");
+        Assert.Equal("Export configuration", command.DisplayName);
+        Assert.NotNull(command.ConfirmationMessage);
+    }
+
+    [Fact]
     public async Task WithProviderCorsAndFailOnError_SetContractVariables()
     {
         var builder = DistributedApplication.CreateBuilder();
@@ -332,4 +520,21 @@ public sealed class VroksNetBuilderExtensionsTests : IDisposable
 #pragma warning restore CS0618
         return values.ToDictionary(kv => kv.Key, kv => (string?)kv.Value);
     }
+}
+
+// Stand-ins named like the hosting packages' resource types: WithConnection infers the type by
+// name, so the tests don't need a package reference per broker.
+internal sealed class GarnetResource(string name) : Resource(name), IResourceWithConnectionString
+{
+    public ReferenceExpression ConnectionStringExpression => ReferenceExpression.Create($"cache:6379");
+}
+
+internal sealed class ValkeyResource(string name) : Resource(name), IResourceWithConnectionString
+{
+    public ReferenceExpression ConnectionStringExpression => ReferenceExpression.Create($"cache:6379");
+}
+
+internal sealed class AzureServiceBusResource(string name) : Resource(name), IResourceWithConnectionString
+{
+    public ReferenceExpression ConnectionStringExpression => ReferenceExpression.Create($"Endpoint=sb://cache/");
 }
