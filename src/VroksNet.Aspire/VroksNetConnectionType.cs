@@ -32,4 +32,7 @@ public enum VroksNetConnectionType
 
     /// <summary>AWS SNS.</summary>
     Sns,
+
+    /// <summary>A gRPC server; the value is its URL (<c>http://</c> for HTTP/2 without TLS, or <c>https://</c>), with no path.</summary>
+    Grpc,
 }

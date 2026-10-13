@@ -14,7 +14,8 @@ public static partial class VroksNetBuilderExtensions
 
     /// <summary>
     /// Imports every spec in a host directory at startup (<c>*.yaml</c>, <c>*.yml</c>, <c>*.json</c>,
-    /// nested directories included; OpenAPI, Swagger and AsyncAPI are told apart by content).
+    /// nested directories included; OpenAPI, Swagger and AsyncAPI are told apart by content), and
+    /// every <c>*.proto</c> file, whose imports resolve among the specs.
     /// Can be called several times.
     /// </summary>
     /// <param name="builder">The resource builder.</param>

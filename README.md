@@ -31,7 +31,7 @@ builder.AddProject<Projects.Orders>("orders")
 builder.Build().Run();
 ```
 
-The manifest references everything by name; its schema is [provisioning-manifest.v1.schema.json](https://github.com/versussun/VroksNet/blob/master/docs/schemas/provisioning-manifest.v1.schema.json). The dashboard links the `http` endpoint as **Admin UI** and the `provider` endpoint as **Provider mock**.
+The manifest references everything by name; its schema is [provisioning-manifest.v1.schema.json](https://github.com/versussun/VroksNet/blob/master/docs/schemas/provisioning-manifest.v1.schema.json). The dashboard links the `http` endpoint as **Admin UI**, the `provider` endpoint as **Provider mock** and the `grpc` endpoint as **gRPC mock**.
 
 ## API
 
@@ -39,7 +39,7 @@ The manifest references everything by name; its schema is [provisioning-manifest
 
 | Method | What it does |
 |---|---|
-| `AddVroksNet(name, port?, providerPort?, tag?)` | Adds the container (`ghcr.io/versussun/vroksnet`, pinned to the image this package was tested with) with endpoints `http` (8080: API, Admin UI, `/mock/…`) and `provider` (7353: mocks at real paths), a readiness check on `/health`, OTLP export, and `Provider__PublicUrl`. Storage defaults to in-memory SQLite — fresh on every start. |
+| `AddVroksNet(name, port?, providerPort?, tag?, grpcPort?)` | Adds the container (`ghcr.io/versussun/vroksnet`, pinned to the image this package was tested with) with endpoints `http` (8080: API, Admin UI, `/mock/…`), `provider` (7353: mocks at real paths) and `grpc` (7354: the gRPC mock, HTTP/2 without TLS), a readiness check on `/health`, OTLP export, `Provider__PublicUrl` and `Grpc__PublicUrl`. Storage defaults to in-memory SQLite — fresh on every start. |
 | `WithDataVolume(name?)` / `WithDataBindMount(source)` | Persist the SQLite database in `/app/data`. Without them every run starts clean, which is what tests want. |
 | `WithProviderCors(origins...)` | `Provider__CorsOrigins`, for browser frontends calling the provider mock. |
 | `WithProvisioningFailOnError(bool)` | `false`: a provisioning error is logged and VroksNet keeps running (reported `Degraded`) instead of exiting with code 3. |
@@ -62,7 +62,7 @@ VroksNet takes any number of connections; call a method once per connection. One
 | Method | What it does |
 |---|---|
 | `WithConnection(name, resource[, type])` | A connection to a resource with a connection string: `Provisioning__Connections__<i>__*` with `ValueFrom=ConnectionStrings:<resource>`. The type is inferred for RabbitMQ, NATS, Kafka, Redis (and Garnet, Valkey) and Azure Service Bus resources; pass a `VroksNetConnectionType` for MQTT, SQS, SNS or anything else. VroksNet waits for the resource. |
-| `WithConnection(name, endpoint)` | An HTTP connection to another resource's endpoint (the real service a Test Scenario checks). No wait, so that service may wait for VroksNet. |
+| `WithConnection(name, endpoint[, type])` | A connection to another resource's endpoint (the real service a Test Scenario checks): HTTP by default, or `VroksNetConnectionType.Grpc` for a gRPC server, e.g. `WithConnection("orders", orders.GetEndpoint("grpc"), VroksNetConnectionType.Grpc)`. No wait, so that service may wait for VroksNet. |
 | `WithConnection(name, type, value)` | A fixed value, e.g. an external URL. |
 | `WithConnection(name, type, parameter)` | A value from a parameter — for credentials kept in user secrets. |
 | `WithConnectionString(name, resource \| parameter \| value)` | Only sets `ConnectionStrings__<name>`, for a connection the **manifest** declares with `valueFrom: ConnectionStrings:<name>`. Declares no connection itself. |
