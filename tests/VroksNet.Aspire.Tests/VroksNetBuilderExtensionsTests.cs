@@ -40,10 +40,10 @@ public sealed class VroksNetBuilderExtensionsTests : IDisposable
     {
         var builder = DistributedApplication.CreateBuilder();
 
-        var vroks = builder.AddVroksNet("vroks", port: 7400, providerPort: 7401);
+        var vroks = builder.AddVroksNet("vroks", port: 7400, providerPort: 7401, grpcPort: 7402);
 
         var endpoints = vroks.Resource.Annotations.OfType<EndpointAnnotation>().ToDictionary(e => e.Name);
-        Assert.Equal(2, endpoints.Count);
+        Assert.Equal(3, endpoints.Count);
         Assert.Equal("http", endpoints["http"].UriScheme);
         Assert.Equal(7400, endpoints["http"].Port);
         Assert.Equal(8080, endpoints["http"].TargetPort);
@@ -51,6 +51,8 @@ public sealed class VroksNetBuilderExtensionsTests : IDisposable
         Assert.Equal(7401, endpoints["provider"].Port);
         Assert.Equal(7353, endpoints["provider"].TargetPort);
         Assert.Equal("provider", vroks.Resource.ProviderEndpoint.EndpointName);
+        Assert.Equal(("http", "http2", 7402, 7354), (endpoints["grpc"].UriScheme, endpoints["grpc"].Transport, endpoints["grpc"].Port, endpoints["grpc"].TargetPort));
+        Assert.Equal("grpc", vroks.Resource.GrpcEndpoint.EndpointName);
     }
 
     [Fact]
@@ -83,6 +85,7 @@ public sealed class VroksNetBuilderExtensionsTests : IDisposable
 
         var env = await GetEnvironmentAsync(vroks.Resource);
         Assert.Equal("{vroks.bindings.provider.url}", env["Provider__PublicUrl"]);
+        Assert.Equal("{vroks.bindings.grpc.url}", env["Grpc__PublicUrl"]);
     }
 
     [Fact]
@@ -273,6 +276,28 @@ public sealed class VroksNetBuilderExtensionsTests : IDisposable
         Assert.Equal("Http", env["Provisioning__Connections__1__Type"]);
         Assert.Equal("{orders.bindings.http.url}", env["Provisioning__Connections__1__Value"]);
         Assert.DoesNotContain(orders.Resource, vroks.Resource.Annotations.OfType<WaitAnnotation>().Select(w => w.Resource));
+    }
+
+    [Fact]
+    public async Task WithConnection_GrpcEndpoint()
+    {
+        var builder = DistributedApplication.CreateBuilder();
+        var orders = builder.AddContainer("orders", "alpine").WithHttpEndpoint(targetPort: 5001, name: "grpc");
+
+        var vroks = builder.AddVroksNet("vroks").WithConnection("orders-grpc", orders.GetEndpoint("grpc"), VroksNetConnectionType.Grpc);
+
+        var env = await GetEnvironmentAsync(vroks.Resource);
+        Assert.Equal("Grpc", env["Provisioning__Connections__0__Type"]);
+        Assert.Equal("{orders.bindings.grpc.url}", env["Provisioning__Connections__0__Value"]);
+    }
+
+    [Fact]
+    public void WithConnection_EndpointForABrokerType_Throws()
+    {
+        var builder = DistributedApplication.CreateBuilder();
+        var orders = builder.AddContainer("orders", "alpine").WithHttpEndpoint(targetPort: 8080, name: "http");
+
+        Assert.Throws<ArgumentException>(() => builder.AddVroksNet("vroks").WithConnection("orders", orders.GetEndpoint("http"), VroksNetConnectionType.Kafka));
     }
 
     [Fact]

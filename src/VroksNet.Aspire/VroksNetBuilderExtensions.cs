@@ -19,6 +19,7 @@ public static partial class VroksNetBuilderExtensions
     /// <param name="name">The name of the resource. Also the service-discovery name consumers use.</param>
     /// <param name="port">The host port for the <c>http</c> endpoint (API, Admin UI). A random port is used when omitted.</param>
     /// <param name="providerPort">The host port for the <c>provider</c> endpoint (mocks at real paths). A random port is used when omitted.</param>
+    /// <param name="grpcPort">The host port for the <c>grpc</c> endpoint (the gRPC mock, HTTP/2 without TLS). A random port is used when omitted.</param>
     /// <param name="tag">The image tag. The version this package was released with is used when omitted.</param>
     /// <returns>A reference to the <see cref="IResourceBuilder{T}"/>.</returns>
     /// <example>
@@ -37,7 +38,8 @@ public static partial class VroksNetBuilderExtensions
         [ResourceName] string name,
         int? port = null,
         int? providerPort = null,
-        string? tag = null)
+        string? tag = null,
+        int? grpcPort = null)
     {
         ArgumentNullException.ThrowIfNull(builder);
         ArgumentException.ThrowIfNullOrWhiteSpace(name);
@@ -49,6 +51,9 @@ public static partial class VroksNetBuilderExtensions
             .WithImageRegistry(VroksNetContainerImageTags.Registry)
             .WithHttpEndpoint(port: port, targetPort: VroksNetResource.ContainerHttpPort, name: VroksNetResource.HttpEndpointName)
             .WithHttpEndpoint(port: providerPort, targetPort: VroksNetResource.ContainerProviderPort, name: VroksNetResource.ProviderEndpointName)
+            // Plaintext HTTP/2 by prior knowledge (h2c), which is what gRPC clients use for http://.
+            .WithHttpEndpoint(port: grpcPort, targetPort: VroksNetResource.ContainerGrpcPort, name: VroksNetResource.GrpcEndpointName)
+            .WithEndpoint(VroksNetResource.GrpcEndpointName, endpoint => endpoint.Transport = "http2")
             // The image's Dockerfile defaults to a file-backed database on its declared volume;
             // without a mount that file is lost with the container anyway, so start from the
             // explicit in-memory mode instead (empty value → VroksNet falls back to in-memory).
@@ -58,6 +63,9 @@ public static partial class VroksNetBuilderExtensions
             .WithEnvironment(
                 VroksNetResource.ProviderPublicUrlVariable,
                 new EndpointReference(resource, VroksNetResource.ProviderEndpointName, KnownNetworkIdentifiers.LocalhostNetwork))
+            .WithEnvironment(
+                VroksNetResource.GrpcPublicUrlVariable,
+                new EndpointReference(resource, VroksNetResource.GrpcEndpointName, KnownNetworkIdentifiers.LocalhostNetwork))
             // VroksNet's ServiceDefaults only export telemetry when OTEL_EXPORTER_OTLP_ENDPOINT
             // is set — this is what makes its traces/logs/metrics show up in the dashboard.
             .WithOtlpExporter()
@@ -65,7 +73,8 @@ public static partial class VroksNetBuilderExtensions
             // consumers only once the mocks are loaded.
             .WithHttpHealthCheck(VroksNetResource.HealthPath, endpointName: VroksNetResource.HttpEndpointName)
             .WithUrlForEndpoint(VroksNetResource.HttpEndpointName, url => url.DisplayText = "Admin UI")
-            .WithUrlForEndpoint(VroksNetResource.ProviderEndpointName, url => url.DisplayText = "Provider mock");
+            .WithUrlForEndpoint(VroksNetResource.ProviderEndpointName, url => url.DisplayText = "Provider mock")
+            .WithUrlForEndpoint(VroksNetResource.GrpcEndpointName, url => url.DisplayText = "gRPC mock");
     }
 
     /// <summary>
@@ -163,11 +172,34 @@ public static partial class VroksNetBuilderExtensions
         this IResourceBuilder<VroksNetResource> builder,
         string name,
         EndpointReference endpoint)
+        => builder.WithConnection(name, endpoint, VroksNetConnectionType.Http);
+
+    /// <summary>
+    /// Declares a connection of the given type to another resource's endpoint — an HTTP or a gRPC
+    /// service a Test Scenario checks against its spec, e.g. <c>orders.GetEndpoint("grpc")</c> with
+    /// <see cref="VroksNetConnectionType.Grpc"/>. VroksNet doesn't wait for it, so the service may
+    /// itself wait for VroksNet.
+    /// </summary>
+    /// <param name="builder">The resource builder.</param>
+    /// <param name="name">The connection name the manifest's Test Scenarios refer to.</param>
+    /// <param name="endpoint">The endpoint; its URL becomes the connection value.</param>
+    /// <param name="type">The connection type: one whose value is a URL.</param>
+    /// <returns>A reference to the <see cref="IResourceBuilder{T}"/>.</returns>
+    /// <exception cref="ArgumentException"><paramref name="type"/> takes a connection string, not a URL.</exception>
+    public static IResourceBuilder<VroksNetResource> WithConnection(
+        this IResourceBuilder<VroksNetResource> builder,
+        string name,
+        EndpointReference endpoint,
+        VroksNetConnectionType type)
     {
         ArgumentNullException.ThrowIfNull(builder);
         ArgumentNullException.ThrowIfNull(endpoint);
+        if (type is not (VroksNetConnectionType.Http or VroksNetConnectionType.Grpc))
+        {
+            throw new ArgumentException($"A {type} connection takes a connection string, not an endpoint's URL; pass the resource instead.", nameof(type));
+        }
 
-        var prefix = builder.AddConnection(name, VroksNetConnectionType.Http);
+        var prefix = builder.AddConnection(name, type);
 
         // Resolved in VroksNet's own (container network) context, so the address works from inside it.
         return builder

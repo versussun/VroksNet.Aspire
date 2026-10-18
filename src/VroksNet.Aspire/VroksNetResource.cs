@@ -2,8 +2,8 @@ namespace Aspire.Hosting.ApplicationModel;
 
 /// <summary>
 /// A VroksNet container: the management REST API, the Admin UI and the <c>/mock/…</c> routes on
-/// the <c>http</c> endpoint, and provider mode (mocks at the spec's real paths) on the
-/// <c>provider</c> endpoint.
+/// the <c>http</c> endpoint, provider mode (mocks at the spec's real paths) on the
+/// <c>provider</c> endpoint, and the gRPC mock (every imported .proto method) on the <c>grpc</c> endpoint.
 /// </summary>
 /// <remarks>
 /// Everything this integration relies on is the image contract:
@@ -16,11 +16,16 @@ public sealed class VroksNetResource(string name) : ContainerResource(name), IRe
 
     internal const string ProviderEndpointName = "provider";
 
+    internal const string GrpcEndpointName = "grpc";
+
     /// <summary>The API and UI port inside the image (contract §3).</summary>
     internal const int ContainerHttpPort = 8080;
 
     /// <summary>The provider mode port inside the image (contract §3).</summary>
     internal const int ContainerProviderPort = 7353;
+
+    /// <summary>The gRPC mock port inside the image, HTTP/2 without TLS (contract §3).</summary>
+    internal const int ContainerGrpcPort = 7354;
 
     /// <summary>Readiness: Unhealthy until provisioning has been applied (contract §6).</summary>
     internal const string HealthPath = "/health";
@@ -39,6 +44,8 @@ public sealed class VroksNetResource(string name) : ContainerResource(name), IRe
 
     internal const string ProviderPublicUrlVariable = "Provider__PublicUrl";
 
+    internal const string GrpcPublicUrlVariable = "Grpc__PublicUrl";
+
     internal const string ProviderCorsOriginsVariable = "Provider__CorsOrigins";
 
     internal const string FailOnErrorVariable = "Provisioning__FailOnError";
@@ -47,6 +54,7 @@ public sealed class VroksNetResource(string name) : ContainerResource(name), IRe
 
     private EndpointReference? _primaryEndpoint;
     private EndpointReference? _providerEndpoint;
+    private EndpointReference? _grpcEndpoint;
 
     /// <summary>The HTTP endpoint serving the management API, the Admin UI and the <c>/mock/…</c> routes.</summary>
     public EndpointReference PrimaryEndpoint => _primaryEndpoint ??= new(this, HttpEndpointName);
@@ -56,4 +64,10 @@ public sealed class VroksNetResource(string name) : ContainerResource(name), IRe
     /// place of the real dependency's base URL.
     /// </summary>
     public EndpointReference ProviderEndpoint => _providerEndpoint ??= new(this, ProviderEndpointName);
+
+    /// <summary>
+    /// The gRPC mock endpoint (HTTP/2 without TLS): every imported .proto method answers at its
+    /// real path. Hand it to a gRPC client in place of the real server's address.
+    /// </summary>
+    public EndpointReference GrpcEndpoint => _grpcEndpoint ??= new(this, GrpcEndpointName);
 }
