@@ -1,0 +1,21 @@
+﻿<Project Sdk="Aspire.AppHost.Sdk/13.6.1">
+
+  <PropertyGroup>
+	<OutputType>Exe</OutputType>
+	<TargetFramework>net10.0</TargetFramework>
+	<ImplicitUsings>enable</ImplicitUsings>
+	<Nullable>enable</Nullable>
+	<AspireUseCliBundle>true</AspireUseCliBundle>
+	<UserSecretsId>3b4092c4-c28a-44e4-bc7c-ccfdf362daf0</UserSecretsId>
+  </PropertyGroup>
+
+  <ItemGroup>
+	<PackageReference Include="Aspire.Hosting.Nats" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\VroksNet.Aspire\VroksNet.Aspire.csproj"  IsAspireProjectResource="false"/>
+    <ProjectReference Include="..\VroksNet.Aspire.Sample.WebApi\VroksNet.Aspire.Sample.WebApi.csproj" />
+  </ItemGroup>
+
+</Project>

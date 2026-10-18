@@ -1,0 +1,6 @@
+@VroksNet.Aspire.Sample.WebApi_HostAddress = http://localhost:5034
+
+GET {{VroksNet.Aspire.Sample.WebApi_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###

@@ -1,0 +1,19 @@
+syntax = "proto3";
+
+package samples.books.v1;
+
+option csharp_namespace = "Samples.Books.V1";
+
+service Books {
+  rpc GetBook (GetBookRequest) returns (GetBookResponse);
+}
+
+message GetBookRequest {
+  string book_id = 1;
+}
+
+message GetBookResponse {
+  string book_id = 1;
+  string title = 2;
+  string author = 3;
+}

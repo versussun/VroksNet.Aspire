@@ -1,0 +1,30 @@
+asyncapi: 3.0.0
+info:
+  title: Sample Book Events
+  version: 1.0.0
+  description: The sample Web API publishes a BookCreated event when a book is created.
+defaultContentType: application/json
+channels:
+  bookCreated:
+    address: books.created
+    messages:
+      BookCreated:
+        payload:
+          type: object
+          required: [bookId, title]
+          properties:
+            bookId:
+              type: string
+            title:
+              type: string
+        examples:
+          - payload:
+              bookId: book-123
+              title: The Example Book
+operations:
+  publishBookCreated:
+    action: send
+    channel:
+      $ref: '#/channels/bookCreated'
+    messages:
+      - $ref: '#/channels/bookCreated/messages/BookCreated'

@@ -6,6 +6,8 @@
     <Project Path="tests/VroksNet.Aspire.Tests/VroksNet.Aspire.Tests.csproj" />
   </Folder>
   <Folder Name="/samples/">
-    <Project Path="samples/VroksNet.Aspire.Sample.AppHost/VroksNet.Aspire.Sample.AppHost.csproj" />
+    <Project Path="samples/VroksNet.Aspire.Sample.AppHost.AppHost/VroksNet.Aspire.Sample.AppHost.AppHost.csproj" Id="2c63c0b3-b63c-48a7-a4ee-ed09d4a87b27" />
+    <Project Path="samples/VroksNet.Aspire.Sample.AppHost.ServiceDefaults/VroksNet.Aspire.Sample.AppHost.ServiceDefaults.csproj" />
+    <Project Path="samples/VroksNet.Aspire.Sample.WebApi/VroksNet.Aspire.Sample.WebApi.csproj" />
   </Folder>
 </Solution>
